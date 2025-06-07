@@ -5,7 +5,7 @@ View your energy usage from Genesis Energy (NZ) in homeassistant.
 ## Data
 
 Imports the last few days of hourly energy data & costs from Genesis Energy.
-Imports Power Shout Balance, Acepted Offers and Active Offers count.
+Imports Power Shout Balance, Accepted Offers and Active Offers count.
 
 ![Energy Useage PNG](/homeassistant-energy-graph.png "Energy Dashboard Reporting")
 
