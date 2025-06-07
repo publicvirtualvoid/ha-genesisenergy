@@ -3,46 +3,39 @@
 from homeassistant.const import Platform
 
 DOMAIN = "genesisenergy"
-SENSOR_NAME = "Genesis Energy" # Default title for ConfigEntry
+INTEGRATION_NAME = "Genesis Energy"
 
 PLATFORMS = [
     Platform.SENSOR,
 ]
 
-# Configuration keys (from config_flow.py)
+# Configuration keys
 CONF_EMAIL = "email"
 CONF_PASSWORD = "password"
 
-# DataUpdateCoordinator update interval
-DEFAULT_SCAN_INTERVAL_HOURS = 4 # Fetch data every 4 hours
-DEFAULT_SCAN_INTERVAL_SECONDS = DEFAULT_SCAN_INTERVAL_HOURS * 3600
+# Default update interval for sensors
+DEFAULT_SCAN_INTERVAL_MINUTES = 4 # 4 hours
+SCAN_INTERVAL_SECONDS = DEFAULT_SCAN_INTERVAL_MINUTES * 60
 
-# --- Keys for data stored by the DataUpdateCoordinator ---
-# These keys will be used to access specific pieces of data from coordinator.data
-DATA_API_RESPONSE_ELECTRICITY_USAGE = "api_electricity_usage"
-DATA_API_RESPONSE_GAS_USAGE = "api_gas_usage"
-DATA_API_RESPONSE_POWERSHOUT_INFO = "api_powershout_info"
-DATA_API_RESPONSE_POWERSHOUT_BALANCE = "api_powershout_balance"
-DATA_API_RESPONSE_POWERSHOUT_BOOKINGS = "api_powershout_bookings"
-DATA_API_RESPONSE_POWERSHOUT_OFFERS = "api_powershout_offers"
-DATA_API_RESPONSE_POWERSHOUT_EXPIRING = "api_powershout_expiring_hours"
+# --- Sensor Types / Keys for Statistics Sensors ---
+SENSOR_TYPE_ELECTRICITY = "electricity"
+SENSOR_TYPE_GAS = "gas"
 
-# --- Statistic IDs (used by GenesisEnergyStatisticsSensor) ---
-# These are the IDs that will appear in HA's statistics database
-STATISTIC_ID_ELECTRICITY_CONSUMPTION = f"{DOMAIN}:electricity_consumption_daily"
-STATISTIC_ID_ELECTRICITY_COST = f"{DOMAIN}:electricity_cost_daily"
-STATISTIC_ID_GAS_CONSUMPTION = f"{DOMAIN}:gas_consumption_daily"
-STATISTIC_ID_GAS_COST = f"{DOMAIN}:gas_cost_daily"
+# --- API Data Keys (conceptual, for clarity in sensor code) ---
+# These aren't stored centrally anymore but represent what each sensor fetches.
+# For Power Shout, sensors will fetch these:
+API_DATA_KEY_POWERSHOUT_INFO = "powershout_info"
+API_DATA_KEY_POWERSHOUT_BALANCE = "powershout_balance"
+API_DATA_KEY_POWERSHOUT_BOOKINGS = "powershout_bookings"
+API_DATA_KEY_POWERSHOUT_OFFERS = "powershout_offers"
+API_DATA_KEY_POWERSHOUT_EXPIRING = "powershout_expiring"
 
-# --- Sensor EntityDescription Keys (for new Power Shout sensors) ---
-# These are used internally to generate unique_ids and sometimes entity_id suffixes
+
+# --- Sensor EntityDescription Keys for Power Shout sensors ---
 SENSOR_KEY_POWERSHOUT_ELIGIBLE = "powershout_eligible"
 SENSOR_KEY_POWERSHOUT_BALANCE = "powershout_balance"
-# Add more if you create more dedicated sensors, e.g.:
-# SENSOR_KEY_POWERSHOUT_NEXT_BOOKING_START = "powershout_next_booking_start"
-# SENSOR_KEY_POWERSHOUT_ACTIVE_OFFERS_COUNT = "powershout_active_offers_count"
+# Add more if desired for other PS aspects, e.g., next booking
 
 # --- Device Information ---
 DEVICE_MANUFACTURER = "Genesis Energy"
-DEVICE_MODEL = "Online Account"
-DEVICE_NAME_PREFIX = "Genesis Energy" # Will be like "Genesis Energy (your_email_userpart)"
+DEVICE_MODEL = "Online Account Data"

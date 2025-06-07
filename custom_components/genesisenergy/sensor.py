@@ -1,24 +1,23 @@
-# custom_components/genesisenergy/sensor.py
+"""Sensor platform for Genesis Energy (Back to Basics + Power Shout)."""
 
 import logging
-from datetime import datetime, timezone
-import pytz 
-from collections.abc import Mapping
-from typing import Any # For type hints
+from datetime import timedelta, datetime, timezone
+import pytz
+from typing import Any, Mapping
+from collections.abc import Callable # For API method type hint
 
 from homeassistant.components.sensor import (
-    SensorDeviceClass,
-    SensorEntity,
+    SensorEntity, 
     SensorEntityDescription,
-    SensorStateClass,
+    SensorStateClass # For Power Shout Balance
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, HomeAssistantError, callback 
+from homeassistant.core import HomeAssistant, HomeAssistantError
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity, DataUpdateCoordinator
+from homeassistant.exceptions import PlatformNotReady
 
-# For statistics processing
+
 from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
 from homeassistant.components.recorder.util import get_instance
 from homeassistant.components.recorder.statistics import (
@@ -27,272 +26,279 @@ from homeassistant.components.recorder.statistics import (
 )
 
 from .const import (
-    DOMAIN,
-    DEFAULT_SCAN_INTERVAL_HOURS,
-    DATA_API_RESPONSE_ELECTRICITY_USAGE,
-    DATA_API_RESPONSE_GAS_USAGE,
-    DATA_API_RESPONSE_POWERSHOUT_INFO,
-    DATA_API_RESPONSE_POWERSHOUT_BALANCE,
-    DATA_API_RESPONSE_POWERSHOUT_BOOKINGS,
-    DATA_API_RESPONSE_POWERSHOUT_OFFERS,
-    DATA_API_RESPONSE_POWERSHOUT_EXPIRING,
-    STATISTIC_ID_ELECTRICITY_CONSUMPTION,
-    STATISTIC_ID_ELECTRICITY_COST,
-    STATISTIC_ID_GAS_CONSUMPTION,
-    STATISTIC_ID_GAS_COST,
+    DOMAIN, 
+    INTEGRATION_NAME,
+    SCAN_INTERVAL_SECONDS,
+    SENSOR_TYPE_ELECTRICITY,
+    SENSOR_TYPE_GAS,
     DEVICE_MANUFACTURER,
     DEVICE_MODEL,
-    DEVICE_NAME_PREFIX,
-    SENSOR_KEY_POWERSHOUT_ELIGIBLE,
+    SENSOR_KEY_POWERSHOUT_ELIGIBLE, # Ensure these are defined in const.py
     SENSOR_KEY_POWERSHOUT_BALANCE,
 )
+from .api import GenesisEnergyApi 
+from .exceptions import InvalidAuth, CannotConnect
+
 
 _LOGGER = logging.getLogger(__name__)
+SCAN_INTERVAL = timedelta(seconds=SCAN_INTERVAL_SECONDS)
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
+    entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the Genesis Energy sensors from a config entry."""
-    entry_data = hass.data[DOMAIN][config_entry.entry_id]
-    coordinator: DataUpdateCoordinator = entry_data["coordinator"]
-    email_username: str = entry_data["email_username"]
+    _LOGGER.debug(f"Setting up sensors for Genesis Energy entry: {entry.entry_id}")
     
-    device_unique_id = f"{DOMAIN}_{email_username}" # Used for device and unique_id prefixes
-
+    domain_data = hass.data[DOMAIN][entry.entry_id]
+    api: GenesisEnergyApi = domain_data["api"]
+    email_username: str = domain_data["email_username"]
+    device_unique_id_part = f"{DOMAIN}_{email_username}"
+    
     device_info = DeviceInfo(
-        identifiers={(DOMAIN, device_unique_id)},
-        name=f"{DEVICE_NAME_PREFIX} ({email_username})",
+        identifiers={(DOMAIN, device_unique_id_part)},
+        name=f"{INTEGRATION_NAME} ({email_username})", 
         manufacturer=DEVICE_MANUFACTURER,
-        model=f"{DEVICE_MODEL} (Polls every {DEFAULT_SCAN_INTERVAL_HOURS}h)",
+        model=DEVICE_MODEL,
     )
 
-    entities = []
+    # Initial API check before adding any sensors
+    try:
+        _LOGGER.debug("Performing initial API check during sensor setup...")
+        await api._ensure_valid_token()
+        _LOGGER.debug("Initial API check successful.")
+    except InvalidAuth as err:
+        _LOGGER.error(f"Authentication failed during sensor setup: {err}")
+        return 
+    except CannotConnect as err:
+        _LOGGER.error(f"Cannot connect to Genesis API during sensor setup: {err}")
+        raise PlatformNotReady(f"Failed to connect to Genesis API: {err}") from err
+    except Exception as err:
+        _LOGGER.error(f"Unexpected error during sensor setup API check: {err}", exc_info=True)
+        raise PlatformNotReady(f"Unexpected API error: {err}") from err
 
-    # Statistics-Pushing Sensors
-    if coordinator.data and coordinator.data.get(DATA_API_RESPONSE_ELECTRICITY_USAGE) is not None:
-        entities.append(GenesisEnergyStatisticsSensor(coordinator, device_info, "Electricity", DATA_API_RESPONSE_ELECTRICITY_USAGE, device_unique_id)) # ADDED device_unique_id
-    if coordinator.data and coordinator.data.get(DATA_API_RESPONSE_GAS_USAGE) is not None:
-        entities.append(GenesisEnergyStatisticsSensor(coordinator, device_info, "Gas", DATA_API_RESPONSE_GAS_USAGE, device_unique_id)) # ADDED device_unique_id
+    sensors_to_add = [
+        GenesisEnergyUsageSensor(api, SENSOR_TYPE_ELECTRICITY, device_info, email_username),
+        GenesisEnergyUsageSensor(api, SENSOR_TYPE_GAS, device_info, email_username),
+        PowerShoutEligibilitySensor(api, device_info, email_username),
+        PowerShoutBalanceSensor(api, device_info, email_username),
+    ]
+    # Can add more PowerShout sensors here in the same pattern
 
-    # New Power Shout Sensors
-    if coordinator.data and coordinator.data.get(DATA_API_RESPONSE_POWERSHOUT_INFO) is not None:
-        entities.append(PowerShoutEligibilitySensor(coordinator, device_info, device_unique_id))
-    if coordinator.data and coordinator.data.get(DATA_API_RESPONSE_POWERSHOUT_BALANCE) is not None:
-        entities.append(PowerShoutBalanceSensor(coordinator, device_info, device_unique_id))
-    
-    async_add_entities(entities)
+    async_add_entities(sensors_to_add, update_before_add=True)
+    _LOGGER.info(f"Added {len(sensors_to_add)} Genesis Energy sensors for account '{email_username}'.")
 
 
-class GenesisEnergyStatisticsSensor(CoordinatorEntity, SensorEntity):
-    """A sensor that processes statistics from coordinator data."""
-    _attr_has_entity_name = True
-    _attr_should_poll = False # Data is from coordinator
+class GenesisEnergyUsageSensor(SensorEntity):
+    """Representation of a Genesis Energy Usage Sensor that pushes statistics."""
+    _attr_should_poll = True 
 
-    def __init__(self, coordinator: DataUpdateCoordinator, device_info: DeviceInfo, fuel_type: str, data_key: str, device_unique_id: str):
-        super().__init__(coordinator)
-        self._fuel_type = fuel_type
-        self._data_key = data_key
+    def __init__(self, api: GenesisEnergyApi, sensor_type: str, device_info: DeviceInfo, account_label: str) -> None:
+        self._api = api
+        self._sensor_type = sensor_type
+        self._account_label = account_label
         self._attr_device_info = device_info
         
-        self.entity_description = SensorEntityDescription(
-            key=f"{fuel_type.lower()}_statistics_updater", # e.g., electricity_statistics_updater
-            name=f"{fuel_type} Statistics Updater",
-            icon="mdi:chart-line" if self._fuel_type == "Electricity" else "mdi:chart-bell-curve-cumulative",
-        )
-        self._attr_unique_id = f"{device_unique_id}_{self.entity_description.key}" 
-        
-        if fuel_type == "Electricity":
-            self._consumption_statistic_id = STATISTIC_ID_ELECTRICITY_CONSUMPTION
-            self._cost_statistic_id = STATISTIC_ID_ELECTRICITY_COST
-        else: # Gas
-            self._consumption_statistic_id = STATISTIC_ID_GAS_CONSUMPTION
-            self._cost_statistic_id = STATISTIC_ID_GAS_COST
-            
-        self._consumption_statistic_name = f"Genesis {fuel_type} Consumption Daily"
-        self._cost_statistic_name = f"Genesis {fuel_type} Cost Daily"
-        
+        fuel_name = sensor_type.capitalize()
+        self._attr_name = f"{INTEGRATION_NAME} {fuel_name} Statistics Updater"
+        self._attr_unique_id = f"{DOMAIN}_{self._account_label}_{sensor_type}_stats_updater"
+
+        self._consumption_statistic_id = f"{DOMAIN}:{self._account_label}_{sensor_type}_consumption_daily"
+        self._cost_statistic_id = f"{DOMAIN}:{self._account_label}_{sensor_type}_cost_daily"
+        self._consumption_statistic_name = f"{INTEGRATION_NAME} {fuel_name} ({self._account_label}) Consumption Daily"
+        self._cost_statistic_name = f"{INTEGRATION_NAME} {fuel_name} ({self._account_label}) Cost Daily"
+
         self._unit_of_measurement = "kWh"
         self._currency = "NZD"
-        _LOGGER.info(f"Initialized {self.name}")
+        self._attr_native_value = None 
+        self._attr_icon = "mdi:chart-line" if sensor_type == SENSOR_TYPE_ELECTRICITY else "mdi:chart-bell-curve-cumulative"
+        _LOGGER.info(f"Initialized sensor: {self.name}, Unique ID: {self.unique_id}, Stat ID: {self._consumption_statistic_id}")
 
-    @property
-    def state(self): # This sensor has no direct state shown in UI
-        return None 
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        _LOGGER.debug(f"{self.name}: Coordinator update received.")
-        if self.coordinator.data and self._data_key in self.coordinator.data:
-            raw_api_response = self.coordinator.data[self._data_key]
-            if raw_api_response and raw_api_response.get('usage'): # Ensure 'usage' key exists
-                _LOGGER.debug(f"{self.name}: Scheduling statistics processing for {len(raw_api_response['usage'])} items.")
-                self.hass.async_create_task(self.async_process_statistics_data(raw_api_response))
-            else:
-                _LOGGER.debug(f"{self.name}: No 'usage' data in coordinator for key {self._data_key}")
-        else:
-            _LOGGER.warning(f"{self.name}: Data key '{self._data_key}' not found in coordinator data or coordinator has no data.")
-        # No need to call self.async_write_ha_state() if state is always None and no attributes change based on coordinator
-        # However, if you add attributes that depend on coordinator data, call it.
-
-    async def async_process_statistics_data(self, data):
-        usageData = data.get('usage', [])
-        if not isinstance(usageData, list) or not usageData:
-            _LOGGER.warning(f"{self.name}: No 'usage' data array or invalid format, skipping statistics.")
-            return
-
-        _LOGGER.debug(f"{self.name}: Processing {len(usageData)} usage entries for statistics.")
-        running_sum_kw = 0.0
-        running_sum_costNZD = 0.0
-        cost_statistics_list = []
-        kw_statistics_list = []
-
-        first_entry = usageData[0]
-        if 'startDate' not in first_entry:
-            _LOGGER.error(f"{self.name}: First entry missing 'startDate'. Data: {first_entry}")
-            return
+    async def async_update(self) -> None:
+        _LOGGER.debug(f"Updating sensor: {self.name}")
         try:
-            first_start_date_api_tz = datetime.fromisoformat(first_entry['startDate'])
-            first_start_date_utc = first_start_date_api_tz.astimezone(pytz.utc)
-        except ValueError as e:
-            _LOGGER.error(f"{self.name}: Could not parse 'startDate' {first_entry['startDate']}: {e}")
-            return
-
-        try:
-            last_kwh_stats_data = await get_instance(self.hass).async_add_executor_job(
-                get_last_statistics, self.hass, 1, self._consumption_statistic_id, True, {"sum"}
-            )
-            last_kwh_stat_entry = last_kwh_stats_data.get(self._consumption_statistic_id, [])
-            if last_kwh_stat_entry and last_kwh_stat_entry[0]["sum"] is not None:
-                stat_start_dt_utc = datetime.fromtimestamp(last_kwh_stat_entry[0]['start'], pytz.utc)
-                if stat_start_dt_utc < first_start_date_utc:
-                    running_sum_kw = float(last_kwh_stat_entry[0]["sum"])
-                    _LOGGER.debug(f"{self.name}: Resuming kWh sum from: {running_sum_kw:.2f} (stat time: {stat_start_dt_utc})")
-                else:
-                    _LOGGER.debug(f"{self.name}: Latest kWh stat ({stat_start_dt_utc}) not before new data ({first_start_date_utc}). Sum from 0.")
+            if self._sensor_type == SENSOR_TYPE_ELECTRICITY:
+                api_response_data = await self._api.get_energy_data()
+            elif self._sensor_type == SENSOR_TYPE_GAS:
+                api_response_data = await self._api.get_gas_data()
             else:
-                _LOGGER.debug(f"{self.name}: No previous kWh sum for {self._consumption_statistic_id}. Sum from 0.")
+                _LOGGER.error(f"Unknown sensor type: {self._sensor_type} for {self.name}")
+                return
+            
+            if not api_response_data:
+                _LOGGER.warning(f"No data returned from API for {self.name}")
+                return
+            await self._async_process_statistics_data(api_response_data)
+        except (InvalidAuth, CannotConnect) as e: _LOGGER.error(f"API error during update for {self.name}: {e}")
+        except Exception as e: _LOGGER.error(f"Unexpected error during update for {self.name}: {e}", exc_info=True)
 
-            last_cost_stats_data = await get_instance(self.hass).async_add_executor_job(
-                get_last_statistics, self.hass, 1, self._cost_statistic_id, True, {"sum"}
-            )
-            last_cost_stat_entry = last_cost_stats_data.get(self._cost_statistic_id, [])
-            if last_cost_stat_entry and last_cost_stat_entry[0]["sum"] is not None:
-                stat_start_dt_utc = datetime.fromtimestamp(last_cost_stat_entry[0]['start'], pytz.utc)
-                if stat_start_dt_utc < first_start_date_utc:
-                    running_sum_costNZD = float(last_cost_stat_entry[0]["sum"])
-                    _LOGGER.debug(f"{self.name}: Resuming NZD cost sum from: {running_sum_costNZD:.2f} (stat time: {stat_start_dt_utc})")
-                else:
-                     _LOGGER.debug(f"{self.name}: Latest NZD cost stat ({stat_start_dt_utc}) not before new data ({first_start_date_utc}). Sum from 0.")
-            else:
-                _LOGGER.debug(f"{self.name}: No previous NZD cost sum for {self._cost_statistic_id}. Sum from 0.")
-        except Exception as e:
-            _LOGGER.error(f"{self.name}: Error fetching last statistics: {e}", exc_info=True)
-            running_sum_kw = 0.0; running_sum_costNZD = 0.0
+    async def _async_process_statistics_data(self, api_response_data: dict) -> None:
+        _LOGGER.debug(f"{self.name}: Entered _async_process_statistics_data.")
+        usage_data_raw = api_response_data.get('usage', [])
         
-        for entry in usageData:
-            try:
-                kw_val = float(entry['kw'])
-                cost_val = float(entry['costNZD'])
-                start_dt_aware = datetime.fromisoformat(entry['startDate'])
-                start_dt_utc = start_dt_aware.astimezone(pytz.utc) # Ensure UTC for HA statistics
-            except (KeyError, ValueError, TypeError) as e:
-                _LOGGER.warning(f"{self.name}: Skipping invalid entry: {entry}. Error: {e}")
-                continue
+        if not isinstance(usage_data_raw, list) or not usage_data_raw:
+            _LOGGER.info(f"{self.name}: No 'usage' entries or not a list in API response.")
+            return
 
-            running_sum_kw += kw_val
-            running_sum_costNZD += cost_val
-            cost_statistics_list.append(StatisticData(start=start_dt_utc, state=round(cost_val, 2), sum=round(running_sum_costNZD, 2)))
+        try:
+            usage_data_sorted = sorted(usage_data_raw, key=lambda x: datetime.fromisoformat(x['startDate']))
+        except (KeyError, ValueError, TypeError) as e:
+            _LOGGER.error(f"{self.name}: Could not sort usageData: {e}. Skipping batch.", exc_info=True)
+            return
+        
+        _LOGGER.debug(f"{self.name}: Processing {len(usage_data_sorted)} sorted usage entries.")
+        running_sum_kw = 0.0; running_sum_cost_nzd = 0.0
+        cost_statistics_list: list[StatisticData] = []; kw_statistics_list: list[StatisticData] = []
+        first_start_date_utc_this_batch = datetime.fromisoformat(usage_data_sorted[0]['startDate']).astimezone(pytz.utc)
+        last_stat_point_utc: datetime | None = None
+
+        try:
+            last_kwh_stats_map = await get_instance(self.hass).async_add_executor_job(get_last_statistics, self.hass, 1, self._consumption_statistic_id, True, {"sum"})
+            last_kwh_stat_list = last_kwh_stats_map.get(self._consumption_statistic_id, [])
+            if last_kwh_stat_list and last_kwh_stat_list[0].get("sum") is not None:
+                last_stat_point_utc = datetime.fromtimestamp(last_kwh_stat_list[0]['start'], pytz.utc)
+                if last_stat_point_utc < first_start_date_utc_this_batch: running_sum_kw = float(last_kwh_stat_list[0]["sum"])
+            
+            last_cost_stats_map = await get_instance(self.hass).async_add_executor_job(get_last_statistics, self.hass, 1, self._cost_statistic_id, True, {"sum"})
+            last_cost_stat_list = last_cost_stats_map.get(self._cost_statistic_id, [])
+            if last_cost_stat_list and last_cost_stat_list[0].get("sum") is not None:
+                if last_stat_point_utc and last_stat_point_utc < first_start_date_utc_this_batch: running_sum_cost_nzd = float(last_cost_stat_list[0]["sum"])
+        except Exception as e: _LOGGER.error(f"{self.name}: Error fetching last stats: {e}. Sums from 0.", exc_info=True); running_sum_kw = 0.0; running_sum_cost_nzd = 0.0; last_stat_point_utc = None
+
+        for entry in usage_data_sorted:
+            try: kw_val = float(entry['kw']); cost_val = float(entry['costNZD']); start_dt_utc = datetime.fromisoformat(entry['startDate']).astimezone(pytz.utc)
+            except Exception: continue # Skip invalid entries
+            if last_stat_point_utc and start_dt_utc <= last_stat_point_utc: continue
+            running_sum_kw += kw_val; running_sum_cost_nzd += cost_val
             kw_statistics_list.append(StatisticData(start=start_dt_utc, state=round(kw_val, 2), sum=round(running_sum_kw, 2)))
+            cost_statistics_list.append(StatisticData(start=start_dt_utc, state=round(cost_val, 2), sum=round(running_sum_cost_nzd, 2)))
         
         if kw_statistics_list:
-            kw_metadata = StatisticMetaData(
-                has_mean=False, has_sum=True, name=self._consumption_statistic_name,
-                source=DOMAIN, statistic_id=self._consumption_statistic_id, unit_of_measurement=self._unit_of_measurement,
-            )
-            try: async_add_external_statistics(self.hass, kw_metadata, kw_statistics_list)
-            except (HomeAssistantError, ValueError) as e: _LOGGER.error(f"{self.name}: Failed to save kWh stats for {self._consumption_statistic_id}: {e}", exc_info=True)
+            meta = StatisticMetaData(has_mean=False, has_sum=True, name=self._consumption_statistic_name, source=DOMAIN, statistic_id=self._consumption_statistic_id, unit_of_measurement=self._unit_of_measurement)
+            try: async_add_external_statistics(self.hass, meta, kw_statistics_list); _LOGGER.info(f"{self.name}: Added {len(kw_statistics_list)} kWh stats.")
+            except Exception as e: _LOGGER.error(f"{self.name}: Failed to save kWh stats: {e}", exc_info=True)
+        else: _LOGGER.info(f"{self.name}: No new kWh stats to add.")
         if cost_statistics_list:
-            cost_metadata = StatisticMetaData(
-                has_mean=False, has_sum=True, name=self._cost_statistic_name,
-                source=DOMAIN, statistic_id=self._cost_statistic_id, unit_of_measurement=self._currency,
-            )
-            try: async_add_external_statistics(self.hass, cost_metadata, cost_statistics_list)
-            except (HomeAssistantError, ValueError) as e: _LOGGER.error(f"{self.name}: Failed to save cost stats for {self._cost_statistic_id}: {e}", exc_info=True)
+            meta = StatisticMetaData(has_mean=False, has_sum=True, name=self._cost_statistic_name, source=DOMAIN, statistic_id=self._cost_statistic_id, unit_of_measurement=self._currency)
+            try: async_add_external_statistics(self.hass, meta, cost_statistics_list); _LOGGER.info(f"{self.name}: Added {len(cost_statistics_list)} NZD cost stats.")
+            except Exception as e: _LOGGER.error(f"{self.name}: Failed to save cost stats: {e}", exc_info=True)
+        else: _LOGGER.info(f"{self.name}: No new cost stats to add.")
 
+# --- Power Shout Sensor Base Class (Optional, or individual classes) ---
+class GenesisEnergyPowerShoutSensorBase(SensorEntity):
+    """Base for Power Shout sensors."""
+    _attr_should_poll = True
 
-class PowerShoutEligibilitySensor(CoordinatorEntity, SensorEntity):
-    _attr_has_entity_name = True
-    _attr_should_poll = False
-
-    def __init__(self, coordinator: DataUpdateCoordinator, device_info: DeviceInfo, device_unique_id: str):
-        super().__init__(coordinator)
+    def __init__(self, api: GenesisEnergyApi, device_info: DeviceInfo, account_label: str, 
+                 entity_key: str, name_suffix: str, icon: str | None = None, 
+                 unit: str | None = None, state_class: SensorStateClass | None = None):
+        self._api = api
         self._attr_device_info = device_info
-        self.entity_description = SensorEntityDescription(
-            key=SENSOR_KEY_POWERSHOUT_ELIGIBLE, name="Power Shout Eligible", icon="mdi:lightning-bolt-outline",
-        )
-        self._attr_unique_id = f"{device_unique_id}_{self.entity_description.key}"
-        _LOGGER.info(f"Initialized {self.name}")
+        self._account_label = account_label # Used for unique ID
 
-    @property
-    def native_value(self):
-        if self.coordinator.data and (ps_info := self.coordinator.data.get(DATA_API_RESPONSE_POWERSHOUT_INFO)):
-            return ps_info.get("isEligible")
-        return None
-
-class PowerShoutBalanceSensor(CoordinatorEntity, SensorEntity):
-    _attr_has_entity_name = True
-    _attr_should_poll = False
-
-    def __init__(self, coordinator: DataUpdateCoordinator, device_info: DeviceInfo, device_unique_id: str):
-        super().__init__(coordinator)
-        self._attr_device_info = device_info
-        self.entity_description = SensorEntityDescription(
-            key=SENSOR_KEY_POWERSHOUT_BALANCE, name="Power Shout Balance",
-            native_unit_of_measurement="hr", icon="mdi:timer-sand", state_class=SensorStateClass.MEASUREMENT,
-        )
-        self._attr_unique_id = f"{device_unique_id}_{self.entity_description.key}"
-        _LOGGER.info(f"Initialized {self.name}")
-
-    @property
-    def native_value(self):
-        if self.coordinator.data and (ps_balance := self.coordinator.data.get(DATA_API_RESPONSE_POWERSHOUT_BALANCE)):
-            if (balance_val := ps_balance.get("balance")) is not None:
-                try: return float(balance_val)
-                except (ValueError, TypeError): _LOGGER.warning(f"Invalid PS balance: {balance_val}"); return None
-        return None
+        self._attr_name = f"{INTEGRATION_NAME} Power Shout {name_suffix}"
+        self._attr_unique_id = f"{DOMAIN}_{account_label}_powershout_{entity_key}"
+        if icon: self._attr_icon = icon
+        if unit: self._attr_native_unit_of_measurement = unit
+        if state_class: self._attr_state_class = state_class
+        
+        self._attr_native_value = None
+        self._extra_attributes: dict[str, Any] = {}
+        _LOGGER.info(f"Initialized sensor: {self.name}, Unique ID: {self.unique_id}")
 
     @property
     def extra_state_attributes(self) -> Mapping[str, Any] | None:
-        attrs = {}
-        if not self.coordinator.data: return None
+        return self._extra_attributes if self._extra_attributes else None
 
-        if ps_offers := self.coordinator.data.get(DATA_API_RESPONSE_POWERSHOUT_OFFERS):
-            attrs["accepted_offers_count"] = len(ps_offers.get("acceptedOffers", []))
-            attrs["active_offers_count"] = len(ps_offers.get("activeOffers", []))
-            if active_names := [o.get("name") for o in ps_offers.get("activeOffers", []) if o.get("name")]:
+    # Child classes will implement async_update and call their specific API method
+
+class PowerShoutEligibilitySensor(GenesisEnergyPowerShoutSensorBase):
+    """Sensor for Power Shout eligibility."""
+    def __init__(self, api: GenesisEnergyApi, device_info: DeviceInfo, account_label: str):
+        super().__init__(api, device_info, account_label, 
+                         SENSOR_KEY_POWERSHOUT_ELIGIBLE, "Eligible", "mdi:lightning-bolt-outline")
+
+    async def async_update(self) -> None:
+        _LOGGER.debug(f"Updating sensor: {self.name}")
+        try:
+            data = await self._api.get_powershout_info()
+            if data and isinstance(data, dict):
+                self._attr_native_value = data.get("isEligible")
+                # Potentially add other attributes from ps_info to self._extra_attributes
+                self._extra_attributes = {"last_api_response": "info_ok"} # Example
+            else:
+                self._attr_native_value = None
+                _LOGGER.warning(f"No/invalid data from get_powershout_info for {self.name}")
+        except (InvalidAuth, CannotConnect) as e: _LOGGER.error(f"API error for {self.name}: {e}")
+        except Exception as e: _LOGGER.error(f"Unexpected error for {self.name}: {e}", exc_info=True)
+
+
+class PowerShoutBalanceSensor(GenesisEnergyPowerShoutSensorBase):
+    """Sensor for Power Shout balance."""
+    def __init__(self, api: GenesisEnergyApi, device_info: DeviceInfo, account_label: str):
+        super().__init__(api, device_info, account_label, 
+                         SENSOR_KEY_POWERSHOUT_BALANCE, "Balance", "mdi:timer-sand", 
+                         "hr", SensorStateClass.MEASUREMENT)
+        # For more complex attributes like bookings, offers
+        self._ps_bookings_data: dict | None = None
+        self._ps_offers_data: dict | None = None
+        self._ps_expiring_data: dict | None = None
+
+
+    async def async_update(self) -> None:
+        _LOGGER.debug(f"Updating sensor: {self.name}")
+        # This sensor could fetch multiple related PS endpoints if desired,
+        # to populate its value and attributes in one go.
+        try:
+            balance_data = await self._api.get_powershout_balance()
+            if balance_data and isinstance(balance_data, dict):
+                bal_val = balance_data.get("balance")
+                try: self._attr_native_value = float(bal_val) if bal_val is not None else None
+                except (ValueError, TypeError): self._attr_native_value = None; _LOGGER.warning(f"Invalid PS balance value: {bal_val}")
+            else:
+                self._attr_native_value = None
+                _LOGGER.warning(f"No/invalid data from get_powershout_balance for {self.name}")
+
+            # Fetch other data for attributes
+            self._ps_bookings_data = await self._api.get_powershout_bookings()
+            self._ps_offers_data = await self._api.get_powershout_offers()
+            self._ps_expiring_data = await self._api.get_powershout_expiring_hours()
+            
+            self._update_extra_attributes()
+
+        except (InvalidAuth, CannotConnect) as e: _LOGGER.error(f"API error for {self.name}: {e}")
+        except Exception as e: _LOGGER.error(f"Unexpected error for {self.name}: {e}", exc_info=True)
+
+    def _update_extra_attributes(self) -> None:
+        """Helper to update extra_state_attributes from fetched PS data."""
+        attrs: dict[str, Any] = {}
+        if self._ps_offers_data and isinstance(self._ps_offers_data, dict):
+            attrs["accepted_offers_count"] = len(self._ps_offers_data.get("acceptedOffers", []))
+            attrs["active_offers_count"] = len(self._ps_offers_data.get("activeOffers", []))
+            if active_names := [o.get("name") for o in self._ps_offers_data.get("activeOffers", []) if o.get("name")]:
                 attrs["active_offer_names"] = active_names
 
-        if ps_expiring := self.coordinator.data.get(DATA_API_RESPONSE_POWERSHOUT_EXPIRING):
-            if exp_msg := ps_expiring.get("expiringHoursMessage"):
+        if self._ps_expiring_data and isinstance(self._ps_expiring_data, dict):
+            if (exp_msg := self._ps_expiring_data.get("expiringHoursMessage")) and isinstance(exp_msg, dict):
                 if title := exp_msg.get("title"): attrs["expiring_hours_message"] = title
-            if tooltip := ps_expiring.get("messageTooltip"): attrs["expiring_hours_tooltip"] = tooltip
+            if tooltip := self._ps_expiring_data.get("messageTooltip"): attrs["expiring_hours_tooltip"] = tooltip
         
-        if ps_bookings := self.coordinator.data.get(DATA_API_RESPONSE_POWERSHOUT_BOOKINGS):
+        if self._ps_bookings_data and isinstance(self._ps_bookings_data, dict):
             now_utc = datetime.now(timezone.utc)
             upcoming = []
-            for booking in ps_bookings.get("bookings", []):
+            for booking in self._ps_bookings_data.get("bookings", []):
+                if not isinstance(booking, dict): continue
                 try:
-                    start_dt = datetime.fromisoformat(booking.get("startDate")).astimezone(timezone.utc)
+                    start_dt_str = booking.get("startDate")
+                    if not start_dt_str: continue
+                    start_dt = datetime.fromisoformat(start_dt_str).astimezone(timezone.utc)
                     if start_dt > now_utc:
                         upcoming.append({
                             "start": start_dt.isoformat(), "end": booking.get("endDate"),
                             "duration_hrs": booking.get("duration")
                         })
-                except (ValueError, TypeError, AttributeError): 
-                    _LOGGER.debug(f"Skipping booking with invalid startDate: {booking.get('startDate')}")
+                except Exception: pass # Ignore parsing errors for bookings
             
             if upcoming:
                 upcoming.sort(key=lambda b: b["start"])
@@ -300,5 +306,4 @@ class PowerShoutBalanceSensor(CoordinatorEntity, SensorEntity):
                 attrs["next_booking_end"] = upcoming[0]["end"]
                 attrs["next_booking_duration_hrs"] = upcoming[0].get("duration_hrs")
                 attrs["upcoming_bookings_count"] = len(upcoming)
-        
-        return attrs if attrs else None
+        self._extra_attributes = attrs
