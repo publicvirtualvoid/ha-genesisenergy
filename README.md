@@ -5,6 +5,7 @@ View your energy usage from Genesis Energy (NZ) in homeassistant.
 ## Data
 
 Imports the last few days of hourly energy data & costs from Genesis Energy.
+Imports Power Shout Balance, Acepted Offers and Active Offers count.
 
 ![Energy Useage PNG](/homeassistant-energy-graph.png "Energy Dashboard Reporting")
 
@@ -17,8 +18,8 @@ You will need to have an existing Genesis Energy account.
 Once installed, simply set-up from the `Devices and services` area.
 The first field is the username and the next field is the password for your Genesis Energy account.
 
-Add "energy_consumption_daily" into Energy Dashboard for energy reporting.
-Then choose "Use an entity tracking the total costs" and select "genesisenergy energy_cost_daily" to add the cost statistic.
+Add "your_email_username_energy_consumption_daily" into Energy Dashboard for energy reporting.
+Then choose "Use an entity tracking the total costs" and select "genesisenergy:your_email_username_energy_cost_daily" to add the cost statistic.
 
 ### Manually
 
