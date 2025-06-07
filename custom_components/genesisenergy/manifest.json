@@ -2,15 +2,15 @@
   "domain": "genesisenergy",
   "name": "Genesis Energy",
   "codeowners": [
-    "@JoelBrenstrum"
+    "@ddahya"
   ],
   "config_flow": true,
   "dependencies": [
     "recorder"
   ],
-  "documentation": "https://github.com/JoelBrenstrum/ha-genesisenergy",
+  "documentation": "https://github.com/ddahya/ha-genesisenergy",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/JoelBrenstrum/ha-genesisenergy/issues",
+  "issue_tracker": "https://github.com/ddahya/ha-genesisenergy/issues",
   "requirements": [],
   "version": "1.0.0-beta"
 }
