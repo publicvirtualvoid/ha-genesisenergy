@@ -11,6 +11,6 @@
   "documentation": "https://github.com/ddahya/ha-genesisenergy",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/ddahya/ha-genesisenergy/issues",
-  "requirements": [],
+  "requirements": ["pytz"],
   "version": "1.0.0-beta"
 }
