@@ -2,6 +2,7 @@
   "domain": "genesisenergy",
   "name": "Genesis Energy",
   "codeowners": [
+    "@JoelBrenstrum",
     "@ddahya"
   ],
   "config_flow": true,
@@ -12,5 +13,9 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/ddahya/ha-genesisenergy/issues",
   "requirements": ["pytz"],
-  "version": "1.0.0-beta"
+  "version": "1.1.0",
+  "platforms": [
+    "sensor",
+    "binary_sensor"
+  ]
 }

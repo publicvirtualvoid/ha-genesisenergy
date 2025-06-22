@@ -1,15 +1,15 @@
-"""Exceptions for the Genesis Energy integration."""
+# custom_components/genesisenergy/exceptions.py
 
 from homeassistant.exceptions import HomeAssistantError
 
 class GenesisEnergyError(HomeAssistantError):
     """Base class for Genesis Energy integration errors."""
-    pass
 
 class CannotConnect(GenesisEnergyError):
-    """Error to indicate we cannot connect to the API."""
-    pass
+    """Error to indicate we cannot connect."""
 
 class InvalidAuth(GenesisEnergyError):
-    """Error to indicate there is invalid authentication."""
-    pass
+    """Error to indicate there is invalid auth."""
+
+class ApiError(GenesisEnergyError):
+    """Generic API Error."""

@@ -20,7 +20,54 @@ add_powershout_booking:
       selector:
         number:
           min: 1
-          max: 4 # Adjust if API allows more, Genesis typically allows 1-4 hours for standard PS
+          max: 4
           step: 1
-          mode: slider # or box
+          mode: slider
           unit_of_measurement: "hr"
+
+backfill_statistics:
+  name: Backfill Historical Statistics
+  description: >
+    Fetches a specified number of days of historical usage data to backfill the
+    long-term statistics. Useful for populating the Energy Dashboard with older data.
+    This can take several minutes to complete depending on the days requested.
+  fields:
+    days_to_fetch:
+      name: Days to Fetch
+      description: "The total number of past days of data to retrieve."
+      required: true
+      example: 90
+      selector:
+        number:
+          min: 1
+          max: 730 # ~2 years
+          step: 1
+          mode: box
+    fuel_type:
+      name: Fuel Type
+      description: "Select which fuel type to backfill. 'both' will fetch for electricity and gas."
+      required: true
+      example: "electricity"
+      selector:
+        select:
+          options:
+            - "electricity"
+            - "gas"
+            - "both"
+
+force_update:
+  name: Force Data Update
+  description: >
+    Triggers an immediate poll of the Genesis Energy API to fetch the latest data for all sensors.
+  fields:
+    fuel_type:
+      name: Fuel Type
+      description: "Select which data to prioritize for refresh, or 'both' for a full refresh."
+      required: true
+      example: "both"
+      selector:
+        select:
+          options:
+            - "electricity"
+            - "gas"
+            - "both"
