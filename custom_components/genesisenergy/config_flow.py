@@ -1,12 +1,10 @@
-"""Config flow for Genesis Energy integration."""
+# custom_components/genesisenergy/config_flow.py
 
 import logging
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 import homeassistant.helpers.config_validation as cv
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
-
 
 from .api import GenesisEnergyApi
 from .const import DOMAIN, INTEGRATION_NAME
@@ -21,27 +19,29 @@ class GenesisEnergyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(self, user_input: dict | None = None):
         errors: dict[str, str] = {}
         if user_input is not None:
-            # Use email as unique_id to prevent duplicate entries for the same account
             await self.async_set_unique_id(user_input[CONF_EMAIL].lower())
             self._abort_if_unique_id_configured()
 
-            session = async_get_clientsession(self.hass)
-            api = GenesisEnergyApi(user_input[CONF_EMAIL], user_input[CONF_PASSWORD], session)
+            # API class now creates its own session
+            api = GenesisEnergyApi(user_input[CONF_EMAIL], user_input[CONF_PASSWORD])
+            
             try:
-                # Test authentication by attempting a login
-                await api._ensure_valid_token() 
+                await api._ensure_valid_token()
                 _LOGGER.info("Config flow: Authentication successful.")
                 return self.async_create_entry(title=INTEGRATION_NAME, data=user_input)
-            except InvalidAuth:
+            
+            except InvalidAuth as e:
+                _LOGGER.warning(f"Config flow failed with InvalidAuth: {e}")
                 errors["base"] = "invalid_auth"
-            except CannotConnect:
+            except CannotConnect as e:
+                _LOGGER.warning(f"Config flow failed with CannotConnect: {e}")
                 errors["base"] = "cannot_connect"
-            except Exception:  # pylint: disable=broad-except
-                _LOGGER.exception("Unexpected exception during config flow.")
+            except Exception:
+                _LOGGER.exception("Config flow failed with an unexpected exception")
                 errors["base"] = "unknown"
-            # No need to explicitly close session if it's managed by HA (async_get_clientsession)
-            # but if api.close() was implemented to handle shared sessions, call it.
-            # await api.close() # Only if api.close() is smart about shared sessions
+            finally:
+                # Ensure the session created for the test is always closed.
+                await api.close()
 
         return self.async_show_form(
             step_id="user",
