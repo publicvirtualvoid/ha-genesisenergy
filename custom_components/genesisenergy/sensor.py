@@ -2,7 +2,6 @@
 import logging
 from datetime import datetime
 import pytz
-from functools import partial
 from typing import Any, Mapping
 import json
 
@@ -59,13 +58,16 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, asyn
         GenesisEnergyAccountSensor(coordinator)
     ])
     
+    # --- RESTORED BILLING SENSOR CREATION ---
     if coordinator.data.get(DATA_API_WIDGET_SIDEKICK):
         LOGGER.info("Sidekick widget data found. Adding billing sensors.")
         entities.append(TotalUsedSensor(coordinator))
         entities.append(EstimatedTotalSensor(coordinator))
         entities.append(EstimatedFutureUseSensor(coordinator))
-        if has_electricity: entities.append(ElectricityUsedSensor(coordinator))
-        if has_gas: entities.append(GasUsedSensor(coordinator))
+        if has_electricity:
+            entities.append(ElectricityUsedSensor(coordinator))
+        if has_gas:
+            entities.append(GasUsedSensor(coordinator))
     else:
         LOGGER.warning("Sidekick widget data not found. Skipping billing sensors.")
     
@@ -109,19 +111,14 @@ class GenesisEnergyStatisticsSensor(CoordinatorEntity[GenesisEnergyDataUpdateCoo
         try:
             sorted_usage_data = sorted(usage_data, key=lambda x: x['startDate'])
         except (KeyError, TypeError): return
-
-        # This helper function will handle one statistic type (e.g., kWh or NZD) robustly
+        
         async def _process_one_statistic(statistic_id: str, stat_name: str, unit: str, value_key: str):
-            # This is the correct call to get_last_statistics, without the extra argument.
             last_stat_list = await get_instance(self.hass).async_add_executor_job(
                 get_last_statistics, self.hass, 1, statistic_id, True, {"sum"}
             )
-            
             last_stat = last_stat_list.get(statistic_id, [{}])[0]
-            
             running_sum = float(last_stat.get('sum', 0.0))
             last_ts = last_stat.get('start', 0)
-            
             stats_to_add = []
             for entry in sorted_usage_data:
                 try:
@@ -129,12 +126,9 @@ class GenesisEnergyStatisticsSensor(CoordinatorEntity[GenesisEnergyDataUpdateCoo
                     start_dt_utc = datetime.fromisoformat(entry['startDate']).astimezone(pytz.utc)
                     start_ts = start_dt_utc.timestamp()
                 except (KeyError, ValueError, TypeError): continue
-                
-                # Only add points that are genuinely newer than our last recorded statistic
                 if start_ts > last_ts:
                     running_sum += value
                     stats_to_add.append(StatisticData(start=start_dt_utc, state=round(value, 2), sum=round(running_sum, 2)))
-
             if stats_to_add:
                 meta = StatisticMetaData(has_mean=False, has_sum=True, name=stat_name, source=DOMAIN, statistic_id=statistic_id, unit_of_measurement=unit)
                 async_add_external_statistics(self.hass, meta, stats_to_add)
@@ -150,13 +144,11 @@ class GenesisBillSensor(CoordinatorEntity[GenesisEnergyDataUpdateCoordinator], S
     _attr_native_unit_of_measurement = "NZD"
     _attr_device_class = SensorDeviceClass.MONETARY
     _attr_icon = "mdi:cash"
-
     def __init__(self, coordinator: GenesisEnergyDataUpdateCoordinator, desc: SensorEntityDescription):
         super().__init__(coordinator)
         self.entity_description = desc
         self._attr_device_info = coordinator.device_info
         self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{desc.key}"
-    
     @property
     def available(self) -> bool:
         return super().available and self.coordinator.data and self.coordinator.data.get(DATA_API_WIDGET_SIDEKICK) is not None
@@ -230,7 +222,6 @@ class EstimatedFutureUseSensor(GenesisBillSensor):
         future_use = estimated_val - used_val
         return round(future_use, 2) if future_use >= 0 else 0.0
 
-# ... (The rest of the file is unchanged)
 class PowerShoutEligibilitySensor(CoordinatorEntity[GenesisEnergyDataUpdateCoordinator], SensorEntity):
     _attr_has_entity_name = True
     def __init__(self, coordinator: GenesisEnergyDataUpdateCoordinator):
