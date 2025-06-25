@@ -9,21 +9,19 @@ This integration is built by reverse-engineering the Genesis Energy web portal a
 ## Features
 
 *   **Energy Dashboard Integration:**
-    *   Creates long-term statistics for **Electricity Consumption (kWh)** and **Gas Consumption (kWh)**, ready to be added to your Home Assistant Energy Dashboard.
+    *   Creates long-term statistics for **Electricity Consumption (kWh)** and **Gas Consumption (kWh)**.
     *   Also creates statistics for daily **Electricity Cost (NZD)** and **Gas Cost (NZD)** for detailed tracking.
 *   **Power Shout Sensors:**
-    *   **Eligibility:** A binary sensor to know if you're eligible for Power Shout.
-    *   **Balance:** A sensor showing your current Power Shout balance in hours.
-    *   **Attributes:** Includes details on upcoming bookings, active offers, and expiring hours.
+    *   Sensors for Power Shout **Eligibility** and current **Balance** (in hours).
+    *   Attributes include details on upcoming bookings, active offers, and expiring hours.
 *   **Billing Cycle Sensors:**
-    *   Provides sensors for costs within your current billing cycle, powered by the "Sidekick" widget on the Genesis website.
-    *   Includes sensors for: `Electricity Used ($)`, `Gas Used ($)`, `Total Used ($)`, `Estimated Total Bill ($)`, and `Estimated Future Use ($)`. Perfect for creating custom dashboards and gauges.
+    *   Provides sensors for costs within your current billing cycle: `Electricity Used ($)`, `Gas Used ($)`, `Total Used ($)`, `Estimated Total Bill ($)`, and `Estimated Future Use ($)`.
 *   **Detailed Account Sensor:**
     *   A single `sensor.genesis_energy_account_details` entity with a wealth of information in its attributes, including your billing plans, account IDs, and raw data from various dashboard widgets.
 *   **Powerful Services:**
-    *   `genesisenergy.add_powershout_booking`: Book your Power Shouts directly from automations or scripts.
+    *   `genesisenergy.add_powershout_booking`: Book your Power Shouts from automations or scripts.
     *   `genesisenergy.backfill_statistics`: A powerful tool to import historical usage data into Home Assistant.
-    *   `genesisenergy.force_update`: Trigger an immediate data refresh outside of the normal schedule.
+    *   `genesisenergy.force_update`: Trigger an immediate data refresh.
 
 ### Manual Installation
 
@@ -38,13 +36,36 @@ This integration is built by reverse-engineering the Genesis Energy web portal a
 3.  Enter your Genesis Energy **Email** and **Password**. These are the same credentials you use for the [Genesis Energy My Account portal](https://myaccount.genesisenergy.co.nz/).
 4.  Click **SUBMIT**. The integration will set up a device and all associated sensors.
 
+## Using with the Energy Dashboard
+
+This integration creates long-term statistics that can be used to populate your Energy Dashboard.
+
+**Important:** The integration will **not** import any data on the very first startup. This is to give you a chance to run a historical backfill first. To populate your statistics for the first time, you must call either the `genesisenergy.force_update` or `genesisenergy.backfill_statistics` service.
+
+To configure the Energy Dashboard:
+1.  Go to **Settings > Dashboards > Energy**.
+2.  Under **Electricity grid**, click **ADD CONSUMPTION**.
+3.  Select the following statistic:
+    *   `Genesis Electricity Consumption Daily`
+4.  Under **Gas consumption**, click **ADD GAS SOURCE**.
+5.  Select the following statistic:
+    *   `Genesis Gas Consumption Daily`
+
+The underlying statistic IDs created by this integration are:
+*   `sensor.genesis_energy_electricity_consumption_daily`
+*   `sensor.genesis_energy_electricity_cost_daily`
+*   `sensor.genesis_energy_gas_consumption_daily`
+*   `sensor.genesis_energy_gas_cost_daily`
+
 ## Services
 
 This integration provides three powerful services to manage your account.
 
 ### Service: `genesisenergy.backfill_statistics`
 
-This service allows you to import historical usage data into Home Assistant. It's perfect for populating your Energy Dashboard with a large amount of history right after you first install the integration.
+This service imports historical usage data. It is most effective when run on a new installation to populate a deep history.
+
+**Note:** This service will **not** fix or overwrite existing data. It will only add data for periods where none exists. If you have corrupted data from a previous version, you must fix it manually in **Developer Tools > Statistics**.
 
 | Field             | Description                                                                 | Example          |
 | ----------------- | --------------------------------------------------------------------------- | ---------------- |
@@ -80,12 +101,24 @@ This service lets you book Power Shouts from automations.
 
 This service triggers an immediate data refresh for all sensors. It has no parameters.
 
+## Important Note for New Installations
+
+When you first install the Genesis Energy integration, it will fetch the last 4 days of your usage data. However, to ensure Home Assistant's database is fully ready, the integration **will not automatically import this data** into the long-term statistics.
+
+**You must manually trigger the first import.**
+
+This gives you a critical opportunity: if you want to import a large amount of historical data, you should do it now, before any recent data is added.
+
+**Recommended Steps for New Users:**
+
+1.  After installing and configuring the integration, wait a minute for it to settle.
+2.  **If you want a deep history:** Call the `genesisenergy.backfill_statistics` service. Choose `both` for the fuel type and set `days_to_fetch` to your desired amount (e.g., `365` for one year). This will be the first data to enter your database, creating a complete history.
+3.  **If you only want recent data:** Call the `genesisenergy.force_update` service. This will trigger the import of the last 4 days of data and create your initial statistics.
+
+Once you have performed either of these actions once, the integration will continue to update automatically every hour.
+
 ## Troubleshooting
 
-*   **Authentication Errors (InvalidAuth):** Double-check your Genesis Energy email and password.
-*   **Connection Errors (CannotConnect):** Ensure your Home Assistant instance has internet connectivity and that `auth.genesisenergy.co.nz` is not blocked by a firewall or ad-blocker (like Pi-hole).
-*   **"Negative Number" in Energy Dashboard:** This indicates corrupted historical data. This was caused by a bug in earlier versions of this component.
-    *   **To Fix:** Go to **Developer Tools > Statistics**, find the `genesisenergy:gas_consumption_daily` or `genesisenergy:electricity_consumption_daily` statistic, and find the first data point with a bad value. Click the "target" icon to manually adjust the `sum` to be correct based on the previous hour's value. You may need to do this for a few consecutive hours to fix the chain. The current version of the integration will prevent this from happening again.
 
 ## Debugging
 
