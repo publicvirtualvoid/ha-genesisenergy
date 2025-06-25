@@ -14,7 +14,7 @@ PLATFORMS: Final = ["sensor"]
 # --- Configuration ---
 CONF_EMAIL: Final = "email"
 CONF_PASSWORD: Final = "password"
-DEFAULT_SCAN_INTERVAL_HOURS: Final = 4
+DEFAULT_SCAN_INTERVAL_HOURS: Final = 1
 
 # --- API Data Keys for Coordinator ---
 DATA_API_ELECTRICITY_USAGE: Final = "api_electricity_usage"
