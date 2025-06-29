@@ -21,7 +21,8 @@ from .const import (
     ATTR_FUEL_TYPE, DATA_API_WIDGET_PROPERTY_LIST, DATA_API_WIDGET_PROPERTY_SWITCHER,
     DATA_API_WIDGET_SIDEKICK, DATA_API_WIDGET_DASHBOARD_POWERSHOUT,
     DATA_API_WIDGET_ECO_TRACKER, DATA_API_WIDGET_DASHBOARD_LIST,
-    DATA_API_WIDGET_ACTION_TILE_LIST, DATA_API_NEXT_BEST_ACTION
+    DATA_API_WIDGET_ACTION_TILE_LIST, DATA_API_NEXT_BEST_ACTION,
+    DATA_API_GENERATION_MIX # <-- ADDED
 )
 # DO NOT import from .sensor here. This is the key to fixing the circular import.
 
@@ -47,9 +48,34 @@ class GenesisEnergyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, any]]):
         except Exception as err: raise UpdateFailed(f"Unexpected error updating data: {err}") from err
     async def _async_update_data_regular(self) -> dict[str, any]:
         days_for_regular_fetch, from_date_str, to_date_str = 4, (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d"), datetime.now().strftime("%Y-%m-%d")
-        api_calls = {k: v for k, v in {**{DATA_API_ELECTRICITY_USAGE: self.api.get_energy_data(days_for_regular_fetch), DATA_API_GAS_USAGE: self.api.get_gas_data(days_for_regular_fetch), DATA_API_POWERSHOUT_INFO: self.api.get_powershout_info(), DATA_API_POWERSHOUT_BALANCE: self.api.get_powershout_balance(), DATA_API_POWERSHOUT_BOOKINGS: self.api.get_powershout_bookings(), DATA_API_POWERSHOUT_OFFERS: self.api.get_powershout_offers(), DATA_API_POWERSHOUT_EXPIRING: self.api.get_powershout_expiring_hours(), DATA_API_BILLING_PLANS: self.api.get_billing_plans(), DATA_API_WIDGET_HERO: self.api.get_widget_hero_info(), DATA_API_WIDGET_BILLS: self.api.get_widget_bill_summary(), DATA_API_AGGREGATED_ELEC_BILL: self.api.get_electricity_aggregated_bill_period(from_date_str, to_date_str)}, **{DATA_API_WIDGET_PROPERTY_LIST: self.api.get_widget_property_list(), DATA_API_WIDGET_PROPERTY_SWITCHER: self.api.get_widget_property_switcher(), DATA_API_WIDGET_SIDEKICK: self.api.get_widget_sidekick(), DATA_API_WIDGET_DASHBOARD_POWERSHOUT: self.api.get_widget_dashboard_powershout(), DATA_API_WIDGET_ECO_TRACKER: self.api.get_widget_eco_tracker(), DATA_API_WIDGET_DASHBOARD_LIST: self.api.get_widget_dashboard_list(), DATA_API_WIDGET_ACTION_TILE_LIST: self.api.get_widget_action_tile_list(), DATA_API_NEXT_BEST_ACTION: self.api.get_next_best_action()}}.items()}
+        
+        # --- MODIFIED --- Add the new generation_mix call to the list
+        api_calls = {
+            DATA_API_ELECTRICITY_USAGE: self.api.get_energy_data(days_for_regular_fetch),
+            DATA_API_GAS_USAGE: self.api.get_gas_data(days_for_regular_fetch),
+            DATA_API_POWERSHOUT_INFO: self.api.get_powershout_info(),
+            DATA_API_POWERSHOUT_BALANCE: self.api.get_powershout_balance(),
+            DATA_API_POWERSHOUT_BOOKINGS: self.api.get_powershout_bookings(),
+            DATA_API_POWERSHOUT_OFFERS: self.api.get_powershout_offers(),
+            DATA_API_POWERSHOUT_EXPIRING: self.api.get_powershout_expiring_hours(),
+            DATA_API_BILLING_PLANS: self.api.get_billing_plans(),
+            DATA_API_WIDGET_HERO: self.api.get_widget_hero_info(),
+            DATA_API_WIDGET_BILLS: self.api.get_widget_bill_summary(),
+            DATA_API_AGGREGATED_ELEC_BILL: self.api.get_electricity_aggregated_bill_period(from_date_str, to_date_str),
+            DATA_API_WIDGET_PROPERTY_LIST: self.api.get_widget_property_list(),
+            DATA_API_WIDGET_PROPERTY_SWITCHER: self.api.get_widget_property_switcher(),
+            DATA_API_WIDGET_SIDEKICK: self.api.get_widget_sidekick(),
+            DATA_API_WIDGET_DASHBOARD_POWERSHOUT: self.api.get_widget_dashboard_powershout(),
+            DATA_API_WIDGET_ECO_TRACKER: self.api.get_widget_eco_tracker(),
+            DATA_API_WIDGET_DASHBOARD_LIST: self.api.get_widget_dashboard_list(),
+            DATA_API_WIDGET_ACTION_TILE_LIST: self.api.get_widget_action_tile_list(),
+            DATA_API_NEXT_BEST_ACTION: self.api.get_next_best_action(),
+            DATA_API_GENERATION_MIX: self.api.get_generation_mix(),
+        }
+
         results = await asyncio.gather(*api_calls.values(), return_exceptions=True)
         fetched_data = {}; [fetched_data.update({key: None if isinstance(result, Exception) else result}) for key, result in zip(api_calls.keys(), results)]; return fetched_data
+    
     async def _async_fetch_initial_historical_data(self) -> dict[str, any]:
         all_electricity_usage, all_gas_usage = [], []; today = datetime.now(timezone.utc)
         for i in range(0, HISTORICAL_FETCH_TOTAL_DAYS, HISTORICAL_FETCH_CHUNK_DAYS):
@@ -91,7 +117,6 @@ class GenesisEnergyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, any]]):
                 end_date = today - timedelta(days=i)
                 start_date = end_date - timedelta(days=chunk_days - 1)
                 
-                # --- LOGGING RESTORED HERE ---
                 LOGGER.info(f"  Fetching {'Elec' if is_elec else 'Gas'} chunk: {start_date:%Y-%m-%d} to {end_date:%Y-%m-%d}")
                 
                 try:

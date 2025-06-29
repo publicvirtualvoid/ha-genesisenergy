@@ -8,18 +8,19 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import ConfigEntryNotReady
 import homeassistant.helpers.config_validation as cv
+from homeassistant.components.persistent_notification import async_create
 
 from .const import (
     DOMAIN, PLATFORMS, LOGGER, CONF_EMAIL,
     SERVICE_ADD_POWERSHOUT_BOOKING, ATTR_START_DATETIME, ATTR_DURATION_HOURS,
-    DATA_API_POWERSHOUT_OFFERS, DATA_API_AGGREGATED_ELEC_BILL, DATA_API_POWERSHOUT_INFO,
+    DATA_API_POWERSHOUT_INFO, DATA_API_AGGREGATED_ELEC_BILL,
     SERVICE_BACKFILL_STATISTICS, ATTR_DAYS_TO_FETCH, ATTR_FUEL_TYPE,
-    SERVICE_FORCE_UPDATE, DATA_API_BILLING_PLANS # <-- Import DATA_API_BILLING_PLANS
+    SERVICE_FORCE_UPDATE, DATA_API_BILLING_PLANS
 )
 from .coordinator import GenesisEnergyDataUpdateCoordinator
-from .exceptions import InvalidAuth, CannotConnect
+from .exceptions import CannotConnect, InvalidAuth
 
-# Schemas remain the same, offering all options
+# Schemas remain the same
 SERVICE_SCHEMA_ADD_POWERSHOUT_BOOKING = vol.Schema({
     vol.Required(ATTR_START_DATETIME): cv.datetime,
     vol.Required(ATTR_DURATION_HOURS): vol.All(vol.Coerce(int), vol.Range(min=1, max=4)),
@@ -34,24 +35,7 @@ SERVICE_SCHEMA_FORCE_UPDATE = vol.Schema({
     vol.Required(ATTR_FUEL_TYPE): vol.In(["electricity", "gas", "both"]),
 })
 
-# --- Helper function to check for available services ---
-def get_available_services(coordinator: GenesisEnergyDataUpdateCoordinator) -> tuple[bool, bool]:
-    """Checks billing plans and returns a tuple of (has_electricity, has_gas)."""
-    has_electricity = False
-    has_gas = False
-    billing_plans_data = coordinator.data.get(DATA_API_BILLING_PLANS)
-    if billing_plans_data and isinstance(billing_plans_data.get("billingAccountSites"), list):
-        for site in billing_plans_data["billingAccountSites"]:
-            if isinstance(site.get("supplyPoints"), list):
-                for supply_point in site["supplyPoints"]:
-                    if isinstance(supply_point, dict):
-                        supply_type = supply_point.get("supplyType")
-                        if supply_type == "electricity":
-                            has_electricity = True
-                        elif supply_type == "naturalGas":
-                            has_gas = True
-    return has_electricity, has_gas
-
+# ... (get_available_services and async_setup_entry boilerplate are unchanged) ...
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Genesis Energy from a config entry."""
@@ -72,10 +56,85 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # ... (add_powershout_booking service is unchanged) ...
+    # --- REVISED Power Shout Booking Service ---
     @callback
     async def async_add_powershout_booking_service(call: ServiceCall) -> None:
-        pass # Unchanged
+        """Handle the service call to add a Power Shout booking."""
+        start_dt_raw = call.data[ATTR_START_DATETIME]
+        duration = call.data[ATTR_DURATION_HOURS]
+
+        # --- MODIFICATION START ---
+        # Floor the start time to the beginning of the hour.
+        start_dt = start_dt_raw.replace(minute=0, second=0, microsecond=0)
+        LOGGER.info(
+            f"Power Shout booking requested for {start_dt_raw}. "
+            f"Flooring to hour start time: {start_dt}"
+        )
+        # --- MODIFICATION END ---
+
+
+        LOGGER.info(f"Attempting to book Power Shout for {duration} hour(s) starting at {start_dt}")
+
+        ps_info = coordinator.data.get(DATA_API_POWERSHOUT_INFO)
+
+        if not ps_info or not all(k in ps_info for k in ['supplyAgreementId', 'supplyPointId', 'loyaltyAccountId']):
+            LOGGER.error("Could not book Power Shout: Missing required IDs. Please try again after the next update.")
+            async_create(
+                hass,
+                "Could not book Power Shout: Required information is missing. Please wait a minute and try again.",
+                title="Genesis Energy Power Shout Failed",
+                notification_id="genesis_powershout_error"
+            )
+            return
+
+        supply_agreement_id = ps_info['supplyAgreementId']
+        supply_point_id = ps_info['supplyPointId']
+        loyalty_account_id = ps_info['loyaltyAccountId']
+
+        # Use the floored datetime for the API call
+        start_date_str = start_dt.astimezone(pytz.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+
+        try:
+            success = await coordinator.api.add_powershout_booking(
+                start_date_str=start_date_str,
+                duration=duration,
+                supply_agreement_id=supply_agreement_id,
+                supply_point_id=supply_point_id,
+                loyalty_account_id=loyalty_account_id
+            )
+
+            if success:
+                LOGGER.info("Successfully booked Power Shout.")
+                # --- MODIFICATION --- Use the floored time in the success message
+                async_create(
+                    hass,
+                    f"Your {duration}-hour Power Shout starting at {start_dt.strftime('%-I:%M %p')} has been booked successfully.",
+                    title="Genesis Energy Power Shout Booked",
+                    notification_id="genesis_powershout_success"
+                )
+                await coordinator.async_request_refresh()
+            else:
+                LOGGER.error("Failed to book Power Shout. The API call was unsuccessful.")
+                async_create(
+                    hass,
+                    "The Power Shout booking failed. The API reported an issue. Check logs for details.",
+                    title="Genesis Energy Power Shout Failed",
+                    notification_id="genesis_powershout_error"
+                )
+
+        except (CannotConnect, InvalidAuth) as e:
+            LOGGER.error(f"Failed to book Power Shout due to an API error: {e}")
+            async_create(
+                hass, f"The Power Shout booking failed due to an API error: {e}",
+                title="Genesis Energy Power Shout Failed", notification_id="genesis_powershout_error"
+            )
+        except Exception as e:
+            LOGGER.exception("An unexpected error occurred while booking Power Shout.")
+            async_create(
+                hass, f"An unexpected error occurred: {e}",
+                title="Genesis Energy Power Shout Failed", notification_id="genesis_powershout_error"
+            )
+
 
     hass.services.async_register(
         DOMAIN, SERVICE_ADD_POWERSHOUT_BOOKING,
@@ -83,7 +142,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         schema=SERVICE_SCHEMA_ADD_POWERSHOUT_BOOKING,
     )
 
-    # --- MODIFIED Backfill Service Handler ---
+    # --- Backfill Service Handler (Unchanged) ---
     @callback
     async def async_backfill_statistics_service(call: ServiceCall) -> None:
         """Handle the service call to backfill historical statistics."""
@@ -92,14 +151,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         has_electricity, has_gas = get_available_services(coordinator)
         
-        # Determine what to actually process based on user's selection and available services
         process_fuel = "none"
         if requested_fuel == "electricity" and has_electricity:
             process_fuel = "electricity"
         elif requested_fuel == "gas" and has_gas:
             process_fuel = "gas"
         elif requested_fuel == "both":
-            # If they ask for both, we determine what that actually means for them
             if has_electricity and has_gas:
                 process_fuel = "both"
             elif has_electricity:
@@ -123,12 +180,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         schema=SERVICE_SCHEMA_BACKFILL_STATISTICS,
     )
 
-    # --- MODIFIED Force Update Service Handler ---
+    # --- Force Update Service Handler (Unchanged) ---
     @callback
     async def async_force_update_service(call: ServiceCall) -> None:
         """Handle the service call to force an update."""
-        # Although the UI will show options, a force update should always be a full refresh
-        # for maximum data consistency. We can just log that we received the call.
         requested_fuel = call.data[ATTR_FUEL_TYPE]
         LOGGER.info(f"Force update service called (for '{requested_fuel}'). Requesting a full coordinator refresh.")
         await coordinator.async_request_refresh()
@@ -138,7 +193,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async_force_update_service,
         schema=SERVICE_SCHEMA_FORCE_UPDATE,
     )
-
+    
+    # ... (Service unloading and final setup are unchanged) ...
     def _unload_services():
         hass.services.async_remove(DOMAIN, SERVICE_ADD_POWERSHOUT_BOOKING)
         hass.services.async_remove(DOMAIN, SERVICE_BACKFILL_STATISTICS)

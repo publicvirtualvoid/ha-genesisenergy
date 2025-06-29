@@ -7,7 +7,7 @@ from typing import Any, Mapping
 import json
 from urllib.parse import parse_qs
 import socket
-import asyncio # <-- Import asyncio for the Lock
+import asyncio
 
 from .exceptions import CannotConnect, InvalidAuth
 
@@ -32,7 +32,7 @@ class GenesisEnergyApi:
         self._access_token_absolute_expiry_ts: float = 0.0
         self._refresh_token_absolute_expiry_ts: float = 0.0
         self._session: aiohttp.ClientSession | None = None
-        self._lock = asyncio.Lock() # <-- Add the lock as an instance variable
+        self._lock = asyncio.Lock()
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -147,8 +147,15 @@ class GenesisEnergyApi:
                         _LOGGER.info("Full login successful.")
                         return True
                     else: raise CannotConnect(f"Login S6: status {r_s6.status}")
+            
+            except aiohttp.ClientError as e:
+                _LOGGER.warning(
+                    "A network error occurred during login (e.g., DNS failure, timeout). "
+                    "This is expected if internet is unavailable. Error: %s", e
+                )
+                raise CannotConnect(f"Network error during login: {e}") from e
             except Exception as e:
-                _LOGGER.error(f"Login FAILED with unexpected exception: {e}", exc_info=True)
+                _LOGGER.error(f"Login FAILED with an unexpected exception: {e}", exc_info=True)
                 raise CannotConnect(f"A low-level error occurred during login: {e}") from e
 
     async def _refresh_access_token(self) -> bool:
@@ -180,29 +187,23 @@ class GenesisEnergyApi:
                         return False
             except (aiohttp.ClientError, json.JSONDecodeError) as e: _LOGGER.error(f"Error during token refresh: {e}"); return False
 
-    # --- THIS IS THE CORRECTED METHOD WITH THE LOCK ---
     async def _ensure_valid_token(self) -> None:
         """Ensures the access token is valid, refreshing if necessary, using a lock to prevent race conditions."""
-        # First, check if the token is already valid without acquiring the lock
         current_time_utc_ts = datetime.now(timezone.utc).timestamp()
         if self._token and self._access_token_absolute_expiry_ts > (current_time_utc_ts + self.TOKEN_VALIDITY_BUFFER_MINUTES * 60):
             return
 
-        # If the token is invalid, acquire the lock
         async with self._lock:
-            # Re-check the token validity *after* acquiring the lock, in case another task already refreshed it.
             if self._token and self._access_token_absolute_expiry_ts > (datetime.now(timezone.utc).timestamp() + self.TOKEN_VALIDITY_BUFFER_MINUTES * 60):
                 return
             
             _LOGGER.info("Token has expired or is invalid. Proceeding with refresh/login under lock.")
 
-            # Try to refresh with the refresh token
             if self._refresh_token and (self._refresh_token_absolute_expiry_ts == 0 or self._refresh_token_absolute_expiry_ts > datetime.now(timezone.utc).timestamp()):
                 if await self._refresh_access_token():
                     if self._token and self._access_token_absolute_expiry_ts > (datetime.now(timezone.utc).timestamp() + self.TOKEN_VALIDITY_BUFFER_MINUTES * 60):
-                        return # Success
+                        return
             
-            # If refresh failed or was not possible, perform a full login
             if not await self._perform_full_login(): raise CannotConnect("Full login failed.")
             if not (self._token and self._access_token_absolute_expiry_ts > (datetime.now(timezone.utc).timestamp() + self.TOKEN_VALIDITY_BUFFER_MINUTES * 60)): raise InvalidAuth("Token invalid after login.")
 
@@ -284,3 +285,8 @@ class GenesisEnergyApi:
         return await self._make_api_call("GET", "/v2/private/naturalgas/advanced/usage", params=params, description="naturalgas aggregated bill period")
     async def get_next_best_action(self):
         return await self._make_api_call("GET", "/v2/private/nextBestAction", description="next best action")
+    
+    # --- NEW METHOD ---
+    async def get_generation_mix(self):
+        """Gets the generation mix forecast for the next two days."""
+        return await self._make_api_call("GET", "/v2/private/generationMix/nextTwoDays", description="generation mix")

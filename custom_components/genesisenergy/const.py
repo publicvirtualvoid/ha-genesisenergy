@@ -36,6 +36,7 @@ DATA_API_WIDGET_ECO_TRACKER: Final = "api_widget_eco_tracker"
 DATA_API_WIDGET_DASHBOARD_LIST: Final = "api_widget_dashboard_list"
 DATA_API_WIDGET_ACTION_TILE_LIST: Final = "api_widget_action_tile_list"
 DATA_API_NEXT_BEST_ACTION: Final = "api_next_best_action"
+DATA_API_GENERATION_MIX: Final = "api_generation_mix" # <-- ADDED
 
 # --- Statistic IDs for Energy Dashboard ---
 STATISTIC_ID_ELECTRICITY_CONSUMPTION: Final = f"{DOMAIN}:electricity_consumption_daily"
@@ -47,6 +48,7 @@ STATISTIC_ID_GAS_COST: Final = f"{DOMAIN}:gas_cost_daily"
 SENSOR_KEY_POWERSHOUT_ELIGIBLE: Final = "powershout_eligible"
 SENSOR_KEY_POWERSHOUT_BALANCE: Final = "powershout_balance"
 SENSOR_KEY_ACCOUNT_DETAILS: Final = "account_details"
+SENSOR_KEY_GENERATION_MIX: Final = "generation_mix" # <-- ADDED
 
 # --- NEW: Keys for Billing Sensors ---
 SENSOR_KEY_BILL_ELEC_USED: Final = "bill_electricity_used"
