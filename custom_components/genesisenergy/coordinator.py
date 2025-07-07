@@ -1,7 +1,7 @@
 # custom_components/genesisenergy/coordinator.py
 from datetime import datetime, timedelta, timezone
 import asyncio
-import pytz
+from zoneinfo import ZoneInfo
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -22,7 +22,7 @@ from .const import (
     DATA_API_WIDGET_SIDEKICK, DATA_API_WIDGET_DASHBOARD_POWERSHOUT,
     DATA_API_WIDGET_ECO_TRACKER, DATA_API_WIDGET_DASHBOARD_LIST,
     DATA_API_WIDGET_ACTION_TILE_LIST, DATA_API_NEXT_BEST_ACTION,
-    DATA_API_GENERATION_MIX # <-- ADDED
+    DATA_API_GENERATION_MIX, DATA_API_EV_PLAN_USAGE
 )
 # DO NOT import from .sensor here. This is the key to fixing the circular import.
 
@@ -36,22 +36,22 @@ class GenesisEnergyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, any]]):
         self.config_entry = entry; self.api = GenesisEnergyApi(email=entry.data[CONF_EMAIL], password=entry.data[CONF_PASSWORD])
         device_name = self.config_entry.title
         self.device_info = DeviceInfo(identifiers={(DOMAIN, self.config_entry.entry_id)}, name=device_name, manufacturer=DEVICE_MANUFACTURER, model=f"{DEVICE_MODEL} (Polls every {DEFAULT_SCAN_INTERVAL_HOURS}h)", configuration_url="https://myaccount.genesisenergy.co.nz/")
-        self._historical_fetch_attempted = False
         super().__init__(hass, LOGGER, name=DOMAIN, update_interval=timedelta(hours=DEFAULT_SCAN_INTERVAL_HOURS))
+    
     async def _async_update_data(self) -> dict[str, any]:
         try:
-            if not self._historical_fetch_attempted:
-                data = await self._async_fetch_initial_historical_data()
-                self._historical_fetch_attempted = True; return data
-            return await self._async_update_data_regular()
+            return await self._async_fetch_all_data()
         except (InvalidAuth, CannotConnect, ApiError) as err: raise UpdateFailed(f"Error communicating with API: {err}") from err
         except Exception as err: raise UpdateFailed(f"Unexpected error updating data: {err}") from err
-    async def _async_update_data_regular(self) -> dict[str, any]:
-        days_for_regular_fetch, from_date_str, to_date_str = 4, (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d"), datetime.now().strftime("%Y-%m-%d")
+
+    async def _async_fetch_all_data(self) -> dict[str, any]:
+        """Fetch all data from the API in parallel."""
+        days_for_regular_fetch = 4
         
-        # --- MODIFIED --- Add the new generation_mix call to the list
         api_calls = {
             DATA_API_ELECTRICITY_USAGE: self.api.get_energy_data(days_for_regular_fetch),
+            # --- MODIFIED --- Call no longer takes an argument
+            DATA_API_EV_PLAN_USAGE: self.api.get_ev_plan_usage(),
             DATA_API_GAS_USAGE: self.api.get_gas_data(days_for_regular_fetch),
             DATA_API_POWERSHOUT_INFO: self.api.get_powershout_info(),
             DATA_API_POWERSHOUT_BALANCE: self.api.get_powershout_balance(),
@@ -61,7 +61,6 @@ class GenesisEnergyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, any]]):
             DATA_API_BILLING_PLANS: self.api.get_billing_plans(),
             DATA_API_WIDGET_HERO: self.api.get_widget_hero_info(),
             DATA_API_WIDGET_BILLS: self.api.get_widget_bill_summary(),
-            DATA_API_AGGREGATED_ELEC_BILL: self.api.get_electricity_aggregated_bill_period(from_date_str, to_date_str),
             DATA_API_WIDGET_PROPERTY_LIST: self.api.get_widget_property_list(),
             DATA_API_WIDGET_PROPERTY_SWITCHER: self.api.get_widget_property_switcher(),
             DATA_API_WIDGET_SIDEKICK: self.api.get_widget_sidekick(),
@@ -74,25 +73,17 @@ class GenesisEnergyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, any]]):
         }
 
         results = await asyncio.gather(*api_calls.values(), return_exceptions=True)
-        fetched_data = {}; [fetched_data.update({key: None if isinstance(result, Exception) else result}) for key, result in zip(api_calls.keys(), results)]; return fetched_data
-    
-    async def _async_fetch_initial_historical_data(self) -> dict[str, any]:
-        all_electricity_usage, all_gas_usage = [], []; today = datetime.now(timezone.utc)
-        for i in range(0, HISTORICAL_FETCH_TOTAL_DAYS, HISTORICAL_FETCH_CHUNK_DAYS):
-            end_date = today - timedelta(days=i); start_date = end_date - timedelta(days=HISTORICAL_FETCH_CHUNK_DAYS - 1)
-            try:
-                elec_res = await self.api.get_energy_data_for_period(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
-                if elec_res and 'usage' in elec_res: all_electricity_usage.extend(elec_res['usage'])
-            except Exception: pass
-            try:
-                gas_res = await self.api.get_gas_data_for_period(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
-                if gas_res and 'usage' in gas_res: all_gas_usage.extend(gas_res['usage'])
-            except Exception: pass
-            if (i + HISTORICAL_FETCH_CHUNK_DAYS) < HISTORICAL_FETCH_TOTAL_DAYS: await asyncio.sleep(HISTORICAL_FETCH_CHUNK_DELAY_SECONDS)
-        unique_elec, unique_gas = {item['startDate']: item for item in all_electricity_usage}, {item['startDate']: item for item in all_gas_usage}
-        other_data = await self._async_update_data_regular()
-        other_data[DATA_API_ELECTRICITY_USAGE], other_data[DATA_API_GAS_USAGE] = {'usage': sorted(unique_elec.values(), key=lambda x: x['startDate'])}, {'usage': sorted(unique_gas.values(), key=lambda x: x['startDate'])}
-        return other_data
+        
+        fetched_data = {}
+        for key, result in zip(api_calls.keys(), results):
+            if isinstance(result, Exception):
+                if key == DATA_API_EV_PLAN_USAGE:
+                    LOGGER.info("Could not fetch EV Plan data. This is expected if you are not on an EV plan.")
+                fetched_data[key] = None
+            else:
+                fetched_data[key] = result
+                
+        return fetched_data
 
     async def async_backfill_statistics_data(self, days_to_fetch: int, fuel_type: str) -> None:
         """Public method to perform a deep historical backfill for a chosen fuel type."""

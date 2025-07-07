@@ -231,17 +231,25 @@ class GenesisEnergyApi:
         except aiohttp.ClientError as e: raise CannotConnect(f"HTTP client error for {description}: {e}") from e
         except json.JSONDecodeError as e: raise CannotConnect(f"Invalid JSON from {description}: {e}") from e
     
-    # ... The get_* methods are unchanged.
+    # ... other get_* methods ...
     async def get_energy_data(self, days_to_fetch: int = 4):
         from_date = (datetime.now() - timedelta(days=days_to_fetch)).strftime("%Y-%m-%d")
         to_date = datetime.now().strftime("%Y-%m-%d")
         payload = {'startDate': from_date, 'endDate': to_date, 'intervalType': "HOURLY"}
         return await self._make_api_call("POST", "/v2/private/electricity/site-usage", json_payload=payload, description="electricity usage")
+        
+    # --- MODIFIED --- Removed arguments and params
+    async def get_ev_plan_usage(self):
+        """Gets electricity usage specifically for an EV plan."""
+        return await self._make_api_call("GET", "/v2/private/evPlan/electricityUsage", description="EV plan usage")
+
     async def get_gas_data(self, days_to_fetch: int = 4):
         from_date = (datetime.now() - timedelta(days=days_to_fetch)).strftime("%Y-%m-%d")
         to_date = datetime.now().strftime("%Y-%m-%d")
         params = {'startDate': from_date, 'endDate': to_date, 'intervalType': "HOURLY"}
         return await self._make_api_call("GET", "/v2/private/naturalgas/advanced/usage", params=params, description="gas usage")
+    
+    # ... all other get methods remain the same ...
     async def get_energy_data_for_period(self, start_date_str: str, end_date_str: str):
         payload = {'startDate': start_date_str, 'endDate': end_date_str, 'intervalType': "HOURLY"}
         return await self._make_api_call("POST", "/v2/private/electricity/site-usage", json_payload=payload, description=f"electricity usage for {start_date_str}-{end_date_str}")
@@ -286,7 +294,6 @@ class GenesisEnergyApi:
     async def get_next_best_action(self):
         return await self._make_api_call("GET", "/v2/private/nextBestAction", description="next best action")
     
-    # --- NEW METHOD ---
     async def get_generation_mix(self):
         """Gets the generation mix forecast for the next two days."""
         return await self._make_api_call("GET", "/v2/private/generationMix/nextTwoDays", description="generation mix")
