@@ -158,9 +158,12 @@ class GenesisEnergyApi:
                 _LOGGER.error(f"Login FAILED with an unexpected exception: {e}", exc_info=True)
                 raise CannotConnect(f"A low-level error occurred during login: {e}") from e
 
+    # --- MODIFIED ---
     async def _refresh_access_token(self) -> bool:
+        """Refreshes the access token and handles network errors gracefully."""
         _LOGGER.info("Attempting to refresh access token...")
         if not self._refresh_token: return False
+        
         connector = aiohttp.TCPConnector(family=socket.AF_INET)
         async with aiohttp.ClientSession(connector=connector) as session:
             payload = {"grant_type": "refresh_token", "client_id": self._client_id, "scope": f"openid offline_access {self._client_id}", "redirect_uri": self._redirect_uri, "refresh_token": self._refresh_token}
@@ -169,7 +172,8 @@ class GenesisEnergyApi:
                 async with session.post(url, data=payload, headers={"User-Agent": BROWSER_USER_AGENT}) as response:
                     if response.status == 200:
                         data = await response.json()
-                        self._token = data.get("access_token"); new_expires_in = data.get("expires_in")
+                        self._token = data.get("access_token")
+                        new_expires_in = data.get("expires_in")
                         if self._token and new_expires_in is not None:
                             now_ts = datetime.now(timezone.utc).timestamp()
                             self._access_token_absolute_expiry_ts = now_ts + int(new_expires_in)
@@ -181,11 +185,25 @@ class GenesisEnergyApi:
                                 if new_rt_expires_in is not None: self._refresh_token_absolute_expiry_ts = now_ts + int(new_rt_expires_in)
                                 _LOGGER.info("Refresh token was rotated.")
                             return True
+                        _LOGGER.warning("Token refresh response was OK but malformed.")
                         return False
                     else:
-                        if response.status in [400, 401]: self._refresh_token = None; self._refresh_token_absolute_expiry_ts = 0
+                        if response.status in [400, 401]:
+                            _LOGGER.warning("Refresh token is invalid. Forcing full re-login.")
+                            self._refresh_token = None
+                            self._refresh_token_absolute_expiry_ts = 0
+                        else:
+                            _LOGGER.error(f"Unexpected status {response.status} during token refresh.")
                         return False
-            except (aiohttp.ClientError, json.JSONDecodeError) as e: _LOGGER.error(f"Error during token refresh: {e}"); return False
+            # Catch specific network errors first
+            except aiohttp.ClientError as e:
+                _LOGGER.warning("A network error occurred during token refresh: %s", e)
+                # We raise CannotConnect so the coordinator knows to retry later
+                raise CannotConnect(f"Network error during token refresh: {e}") from e
+            # Catch other unexpected errors
+            except Exception as e:
+                _LOGGER.exception("An unexpected error occurred during token refresh.")
+                return False
 
     async def _ensure_valid_token(self) -> None:
         """Ensures the access token is valid, refreshing if necessary, using a lock to prevent race conditions."""
@@ -199,14 +217,19 @@ class GenesisEnergyApi:
             
             _LOGGER.info("Token has expired or is invalid. Proceeding with refresh/login under lock.")
 
-            if self._refresh_token and (self._refresh_token_absolute_expiry_ts == 0 or self._refresh_token_absolute_expiry_ts > datetime.now(timezone.utc).timestamp()):
-                if await self._refresh_access_token():
-                    if self._token and self._access_token_absolute_expiry_ts > (datetime.now(timezone.utc).timestamp() + self.TOKEN_VALIDITY_BUFFER_MINUTES * 60):
+            try:
+                if self._refresh_token and (self._refresh_token_absolute_expiry_ts == 0 or self._refresh_token_absolute_expiry_ts > datetime.now(timezone.utc).timestamp()):
+                    if await self._refresh_access_token():
+                        # If refresh was successful, we're done
                         return
-            
+            except CannotConnect:
+                 # If refresh fails due to network, re-raise to stop the update.
+                 # This prevents an immediate, and likely failing, full login attempt.
+                raise
+
+            # If refresh failed for any other reason or was not possible, perform a full login
             if not await self._perform_full_login(): raise CannotConnect("Full login failed.")
             if not (self._token and self._access_token_absolute_expiry_ts > (datetime.now(timezone.utc).timestamp() + self.TOKEN_VALIDITY_BUFFER_MINUTES * 60)): raise InvalidAuth("Token invalid after login.")
-
 
     async def _make_api_call(self, method: str, endpoint: str, params: dict | None = None, json_payload: dict | None = None, description: str = "data", expect_json: bool = True) -> Any:
         await self._ensure_valid_token()
@@ -231,14 +254,13 @@ class GenesisEnergyApi:
         except aiohttp.ClientError as e: raise CannotConnect(f"HTTP client error for {description}: {e}") from e
         except json.JSONDecodeError as e: raise CannotConnect(f"Invalid JSON from {description}: {e}") from e
     
-    # ... other get_* methods ...
+    # ... all other get methods are unchanged ...
     async def get_energy_data(self, days_to_fetch: int = 4):
         from_date = (datetime.now() - timedelta(days=days_to_fetch)).strftime("%Y-%m-%d")
         to_date = datetime.now().strftime("%Y-%m-%d")
         payload = {'startDate': from_date, 'endDate': to_date, 'intervalType': "HOURLY"}
         return await self._make_api_call("POST", "/v2/private/electricity/site-usage", json_payload=payload, description="electricity usage")
         
-    # --- MODIFIED --- Removed arguments and params
     async def get_ev_plan_usage(self):
         """Gets electricity usage specifically for an EV plan."""
         return await self._make_api_call("GET", "/v2/private/evPlan/electricityUsage", description="EV plan usage")
@@ -249,7 +271,6 @@ class GenesisEnergyApi:
         params = {'startDate': from_date, 'endDate': to_date, 'intervalType': "HOURLY"}
         return await self._make_api_call("GET", "/v2/private/naturalgas/advanced/usage", params=params, description="gas usage")
     
-    # ... all other get methods remain the same ...
     async def get_energy_data_for_period(self, start_date_str: str, end_date_str: str):
         payload = {'startDate': start_date_str, 'endDate': end_date_str, 'intervalType': "HOURLY"}
         return await self._make_api_call("POST", "/v2/private/electricity/site-usage", json_payload=payload, description=f"electricity usage for {start_date_str}-{end_date_str}")
