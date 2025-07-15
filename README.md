@@ -1,6 +1,6 @@
 # Genesis Energy Integration for Home Assistant
 
-This is a custom component for Home Assistant to integrate with Genesis Energy (New Zealand). It fetches your hourly electricity and gas consumption, costs, Power Shout details, and other account information, making it available within Home Assistant.
+This is a custom component for Home Assistant to integrate with Genesis Energy (New Zealand). It fetches your hourly electricity and gas consumption, costs, forecasts, usage breakdowns, Power Shout details, and other account information, making it available within Home Assistant.
 
 This integration is built by reverse-engineering the Genesis Energy web portal and is not officially supported by Genesis. It may break if Genesis changes their website or APIs.
 
@@ -11,6 +11,17 @@ This integration is built by reverse-engineering the Genesis Energy web portal a
 *   **Energy Dashboard Integration:**
     *   Creates long-term statistics for **Electricity Consumption (kWh)** and **Gas Consumption (kWh)**.
     *   Also creates statistics for daily **Electricity Cost (NZD)** and **Gas Cost (NZD)** for detailed tracking.
+*   **Electricity Forecast Sensors:**
+    *   Integrates Genesis's daily and weekly electricity forecast.
+    *   `Today's Forecast Usage (kWh)` and `Today's Forecast Cost ($)` sensors.
+    *   Attributes include the predicted high/low range and the full 7-day forecast data, perfect for advanced automations.
+*   **Usage Breakdown Sensors:**
+    *   Shows how Genesis categorizes your electricity use from your last completed billing period.
+    *   Creates sensors for `Appliances`, `Electronics`, `Lighting`, and `Other` usage (in kWh).
+    *   Ideal for creating historical pie or bar charts to see where your energy goes.
+*   **EV Plan Sensors:**
+    *   If you're on an EV plan, it automatically creates sensors for your daily **Day (Peak) Usage/Cost** and **Night (Off-Peak) Usage/Cost**.
+    *   A "Savings" sensor shows how much you saved on your last full day of usage compared to the standard rate.
 *   **Power Shout Sensors:**
     *   Sensors for Power Shout **Eligibility** and current **Balance** (in hours).
     *   Attributes include details on upcoming bookings, active offers, and expiring hours.
@@ -116,9 +127,6 @@ This gives you a critical opportunity: if you want to import a large amount of h
 3.  **If you only want recent data:** Call the `genesisenergy.force_update` service. This will trigger the import of the last 4 days of data and create your initial statistics.
 
 Once you have performed either of these actions once, the integration will continue to update automatically every hour.
-
-## Troubleshooting
-
 
 ## Debugging
 
