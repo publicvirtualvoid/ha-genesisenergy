@@ -158,7 +158,6 @@ class GenesisEnergyApi:
                 _LOGGER.error(f"Login FAILED with an unexpected exception: {e}", exc_info=True)
                 raise CannotConnect(f"A low-level error occurred during login: {e}") from e
 
-    # --- MODIFIED ---
     async def _refresh_access_token(self) -> bool:
         """Refreshes the access token and handles network errors gracefully."""
         _LOGGER.info("Attempting to refresh access token...")
@@ -231,6 +230,7 @@ class GenesisEnergyApi:
             if not await self._perform_full_login(): raise CannotConnect("Full login failed.")
             if not (self._token and self._access_token_absolute_expiry_ts > (datetime.now(timezone.utc).timestamp() + self.TOKEN_VALIDITY_BUFFER_MINUTES * 60)): raise InvalidAuth("Token invalid after login.")
 
+
     async def _make_api_call(self, method: str, endpoint: str, params: dict | None = None, json_payload: dict | None = None, description: str = "data", expect_json: bool = True) -> Any:
         await self._ensure_valid_token()
         session = await self._get_session()
@@ -254,7 +254,6 @@ class GenesisEnergyApi:
         except aiohttp.ClientError as e: raise CannotConnect(f"HTTP client error for {description}: {e}") from e
         except json.JSONDecodeError as e: raise CannotConnect(f"Invalid JSON from {description}: {e}") from e
     
-    # ... all other get methods are unchanged ...
     async def get_energy_data(self, days_to_fetch: int = 4):
         from_date = (datetime.now() - timedelta(days=days_to_fetch)).strftime("%Y-%m-%d")
         to_date = datetime.now().strftime("%Y-%m-%d")
@@ -271,6 +270,14 @@ class GenesisEnergyApi:
         params = {'startDate': from_date, 'endDate': to_date, 'intervalType': "HOURLY"}
         return await self._make_api_call("GET", "/v2/private/naturalgas/advanced/usage", params=params, description="gas usage")
     
+    async def get_electricity_forecast(self):
+        """Gets the electricity forecast."""
+        return await self._make_api_call("GET", "/v2/private/electricityForecast", description="electricity forecast")
+        
+    async def get_usage_breakdown(self):
+        """Gets the electricity usage breakdown by category."""
+        return await self._make_api_call("GET", "/v2/private/insights/usagebreakdown", params={"environment": "web"}, description="usage breakdown")
+
     async def get_energy_data_for_period(self, start_date_str: str, end_date_str: str):
         payload = {'startDate': start_date_str, 'endDate': end_date_str, 'intervalType': "HOURLY"}
         return await self._make_api_call("POST", "/v2/private/electricity/site-usage", json_payload=payload, description=f"electricity usage for {start_date_str}-{end_date_str}")

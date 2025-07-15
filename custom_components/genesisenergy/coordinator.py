@@ -22,13 +22,10 @@ from .const import (
     DATA_API_WIDGET_SIDEKICK, DATA_API_WIDGET_DASHBOARD_POWERSHOUT,
     DATA_API_WIDGET_ECO_TRACKER, DATA_API_WIDGET_DASHBOARD_LIST,
     DATA_API_WIDGET_ACTION_TILE_LIST, DATA_API_NEXT_BEST_ACTION,
-    DATA_API_GENERATION_MIX, DATA_API_EV_PLAN_USAGE
+    DATA_API_GENERATION_MIX, DATA_API_EV_PLAN_USAGE, DATA_API_ELECTRICITY_FORECAST,
+    DATA_API_USAGE_BREAKDOWN
 )
 # DO NOT import from .sensor here. This is the key to fixing the circular import.
-
-HISTORICAL_FETCH_TOTAL_DAYS = 4
-HISTORICAL_FETCH_CHUNK_DAYS = 4
-HISTORICAL_FETCH_CHUNK_DELAY_SECONDS = 2
 
 class GenesisEnergyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, any]]):
     config_entry: ConfigEntry; api: GenesisEnergyApi; device_info: DeviceInfo
@@ -50,7 +47,6 @@ class GenesisEnergyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, any]]):
         
         api_calls = {
             DATA_API_ELECTRICITY_USAGE: self.api.get_energy_data(days_for_regular_fetch),
-            # --- MODIFIED --- Call no longer takes an argument
             DATA_API_EV_PLAN_USAGE: self.api.get_ev_plan_usage(),
             DATA_API_GAS_USAGE: self.api.get_gas_data(days_for_regular_fetch),
             DATA_API_POWERSHOUT_INFO: self.api.get_powershout_info(),
@@ -70,6 +66,8 @@ class GenesisEnergyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, any]]):
             DATA_API_WIDGET_ACTION_TILE_LIST: self.api.get_widget_action_tile_list(),
             DATA_API_NEXT_BEST_ACTION: self.api.get_next_best_action(),
             DATA_API_GENERATION_MIX: self.api.get_generation_mix(),
+            DATA_API_ELECTRICITY_FORECAST: self.api.get_electricity_forecast(),
+            DATA_API_USAGE_BREAKDOWN: self.api.get_usage_breakdown(),
         }
 
         results = await asyncio.gather(*api_calls.values(), return_exceptions=True)
@@ -77,8 +75,7 @@ class GenesisEnergyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, any]]):
         fetched_data = {}
         for key, result in zip(api_calls.keys(), results):
             if isinstance(result, Exception):
-                if key == DATA_API_EV_PLAN_USAGE:
-                    LOGGER.info("Could not fetch EV Plan data. This is expected if you are not on an EV plan.")
+                LOGGER.info("Could not fetch data for %s. This may be expected. Error: %s", key, result)
                 fetched_data[key] = None
             else:
                 fetched_data[key] = result
@@ -86,7 +83,6 @@ class GenesisEnergyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, any]]):
         return fetched_data
 
     async def async_backfill_statistics_data(self, days_to_fetch: int, fuel_type: str) -> None:
-        """Public method to perform a deep historical backfill for a chosen fuel type."""
         from .sensor import GenesisEnergyStatisticsSensor
         LOGGER.info(f"Starting historical backfill service for '{fuel_type}' for {days_to_fetch} days.")
         process_elec, process_gas = fuel_type in ["electricity", "both"], fuel_type in ["gas", "both"]
@@ -101,7 +97,6 @@ class GenesisEnergyDataUpdateCoordinator(DataUpdateCoordinator[dict[str, any]]):
                     elif entity._fuel_type == "Gas": gas_sensor = entity
         
         async def _backfill_fuel(sensor: GenesisEnergyStatisticsSensor, is_elec: bool):
-            """Helper to fetch and process data for one fuel type."""
             all_data, chunk_days, chunk_delay = [], 4, 2
             today = datetime.now(timezone.utc).date()
             for i in range(0, days_to_fetch, chunk_days):

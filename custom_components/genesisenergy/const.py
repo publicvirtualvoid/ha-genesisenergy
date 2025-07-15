@@ -38,6 +38,8 @@ DATA_API_WIDGET_DASHBOARD_LIST: Final = "api_widget_dashboard_list"
 DATA_API_WIDGET_ACTION_TILE_LIST: Final = "api_widget_action_tile_list"
 DATA_API_NEXT_BEST_ACTION: Final = "api_next_best_action"
 DATA_API_GENERATION_MIX: Final = "api_generation_mix"
+DATA_API_ELECTRICITY_FORECAST: Final = "api_electricity_forecast"
+DATA_API_USAGE_BREAKDOWN: Final = "api_usage_breakdown"
 
 # --- Statistic IDs for Energy Dashboard ---
 STATISTIC_ID_ELECTRICITY_CONSUMPTION: Final = f"{DOMAIN}:electricity_consumption_daily"
@@ -64,6 +66,16 @@ SENSOR_KEY_EV_DAY_COST: Final = "ev_day_cost"
 SENSOR_KEY_EV_NIGHT_USAGE: Final = "ev_night_usage"
 SENSOR_KEY_EV_NIGHT_COST: Final = "ev_night_cost"
 SENSOR_KEY_EV_TOTAL_SAVINGS: Final = "ev_total_savings"
+
+# --- Keys for Forecast Sensors ---
+SENSOR_KEY_FORECAST_USAGE: Final = "forecast_usage"
+SENSOR_KEY_FORECAST_COST: Final = "forecast_cost"
+
+# --- Keys for Usage Breakdown Sensors ---
+SENSOR_KEY_BREAKDOWN_APPLIANCES: Final = "breakdown_appliances"
+SENSOR_KEY_BREAKDOWN_ELECTRONICS: Final = "breakdown_electronics"
+SENSOR_KEY_BREAKDOWN_LIGHTING: Final = "breakdown_lighting"
+SENSOR_KEY_BREAKDOWN_OTHER: Final = "breakdown_other"
 
 # --- Device Information ---
 DEVICE_MANUFACTURER: Final = "Genesis Energy"
