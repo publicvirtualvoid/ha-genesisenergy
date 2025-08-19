@@ -18,6 +18,7 @@ DEFAULT_SCAN_INTERVAL_HOURS: Final = 1
 
 # --- API Data Keys for Coordinator ---
 DATA_API_ELECTRICITY_USAGE: Final = "api_electricity_usage"
+DATA_API_EV_PLAN_USAGE: Final = "api_ev_plan_usage" 
 DATA_API_GAS_USAGE: Final = "api_gas_usage"
 DATA_API_POWERSHOUT_INFO: Final = "api_powershout_info"
 DATA_API_POWERSHOUT_BALANCE: Final = "api_powershout_balance"
@@ -36,6 +37,9 @@ DATA_API_WIDGET_ECO_TRACKER: Final = "api_widget_eco_tracker"
 DATA_API_WIDGET_DASHBOARD_LIST: Final = "api_widget_dashboard_list"
 DATA_API_WIDGET_ACTION_TILE_LIST: Final = "api_widget_action_tile_list"
 DATA_API_NEXT_BEST_ACTION: Final = "api_next_best_action"
+DATA_API_GENERATION_MIX: Final = "api_generation_mix"
+DATA_API_ELECTRICITY_FORECAST: Final = "api_electricity_forecast"
+DATA_API_USAGE_BREAKDOWN: Final = "api_usage_breakdown"
 
 # --- Statistic IDs for Energy Dashboard ---
 STATISTIC_ID_ELECTRICITY_CONSUMPTION: Final = f"{DOMAIN}:electricity_consumption_daily"
@@ -47,14 +51,31 @@ STATISTIC_ID_GAS_COST: Final = f"{DOMAIN}:gas_cost_daily"
 SENSOR_KEY_POWERSHOUT_ELIGIBLE: Final = "powershout_eligible"
 SENSOR_KEY_POWERSHOUT_BALANCE: Final = "powershout_balance"
 SENSOR_KEY_ACCOUNT_DETAILS: Final = "account_details"
+SENSOR_KEY_GENERATION_MIX: Final = "generation_mix"
 
-# --- NEW: Keys for Billing Sensors ---
+# --- Keys for Billing Sensors ---
 SENSOR_KEY_BILL_ELEC_USED: Final = "bill_electricity_used"
 SENSOR_KEY_BILL_GAS_USED: Final = "bill_gas_used"
 SENSOR_KEY_BILL_TOTAL_USED: Final = "bill_total_used"
 SENSOR_KEY_BILL_ESTIMATED_TOTAL: Final = "bill_estimated_total"
 SENSOR_KEY_BILL_ESTIMATED_FUTURE: Final = "bill_estimated_future"
 
+# --- Keys for EV Plan Sensors ---
+SENSOR_KEY_EV_DAY_USAGE: Final = "ev_day_usage"
+SENSOR_KEY_EV_DAY_COST: Final = "ev_day_cost"
+SENSOR_KEY_EV_NIGHT_USAGE: Final = "ev_night_usage"
+SENSOR_KEY_EV_NIGHT_COST: Final = "ev_night_cost"
+SENSOR_KEY_EV_TOTAL_SAVINGS: Final = "ev_total_savings"
+
+# --- Keys for Forecast Sensors ---
+SENSOR_KEY_FORECAST_USAGE: Final = "forecast_usage"
+SENSOR_KEY_FORECAST_COST: Final = "forecast_cost"
+
+# --- Keys for Usage Breakdown Sensors ---
+SENSOR_KEY_BREAKDOWN_APPLIANCES: Final = "breakdown_appliances"
+SENSOR_KEY_BREAKDOWN_ELECTRONICS: Final = "breakdown_electronics"
+SENSOR_KEY_BREAKDOWN_LIGHTING: Final = "breakdown_lighting"
+SENSOR_KEY_BREAKDOWN_OTHER: Final = "breakdown_other"
 
 # --- Device Information ---
 DEVICE_MANUFACTURER: Final = "Genesis Energy"

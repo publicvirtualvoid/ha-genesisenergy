@@ -1,7 +1,7 @@
 # custom_components/genesisenergy/sensor.py
 import logging
-from datetime import datetime
-import pytz
+from datetime import datetime, date, timedelta
+from zoneinfo import ZoneInfo
 from typing import Any, Mapping
 import json
 
@@ -30,11 +30,18 @@ from .const import (
     DATA_API_WIDGET_ECO_TRACKER, DATA_API_WIDGET_DASHBOARD_LIST,
     DATA_API_WIDGET_ACTION_TILE_LIST, DATA_API_NEXT_BEST_ACTION,
     SENSOR_KEY_BILL_ELEC_USED, SENSOR_KEY_BILL_GAS_USED, SENSOR_KEY_BILL_TOTAL_USED,
-    SENSOR_KEY_BILL_ESTIMATED_TOTAL, SENSOR_KEY_BILL_ESTIMATED_FUTURE
+    SENSOR_KEY_BILL_ESTIMATED_TOTAL, SENSOR_KEY_BILL_ESTIMATED_FUTURE,
+    DATA_API_GENERATION_MIX, SENSOR_KEY_GENERATION_MIX, DATA_API_EV_PLAN_USAGE,
+    SENSOR_KEY_EV_DAY_USAGE, SENSOR_KEY_EV_DAY_COST, SENSOR_KEY_EV_NIGHT_USAGE,
+    SENSOR_KEY_EV_NIGHT_COST, SENSOR_KEY_EV_TOTAL_SAVINGS,
+    DATA_API_ELECTRICITY_FORECAST, SENSOR_KEY_FORECAST_USAGE, SENSOR_KEY_FORECAST_COST,
+    DATA_API_USAGE_BREAKDOWN, SENSOR_KEY_BREAKDOWN_APPLIANCES, SENSOR_KEY_BREAKDOWN_ELECTRONICS,
+    SENSOR_KEY_BREAKDOWN_LIGHTING, SENSOR_KEY_BREAKDOWN_OTHER
 )
 from .coordinator import GenesisEnergyDataUpdateCoordinator
 
 async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
+    # This setup function is correct and does not need changes
     coordinator: GenesisEnergyDataUpdateCoordinator = hass.data[DOMAIN][config_entry.entry_id]
     entities = []
     
@@ -49,8 +56,38 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, asyn
                         if supply_type == "electricity": has_electricity = True
                         elif supply_type == "naturalGas": has_gas = True
     
-    if has_electricity: entities.append(GenesisEnergyStatisticsSensor(coordinator, "Electricity"))
-    if has_gas: entities.append(GenesisEnergyStatisticsSensor(coordinator, "Gas"))
+    if has_electricity:
+        entities.append(GenesisEnergyStatisticsSensor(coordinator, "Electricity"))
+        if coordinator.data.get(DATA_API_GENERATION_MIX):
+            entities.append(GenerationMixSensor(coordinator))
+        if coordinator.data.get(DATA_API_ELECTRICITY_FORECAST):
+            LOGGER.info("Electricity forecast data found. Adding forecast sensors.")
+            entities.extend([
+                ForecastUsageSensor(coordinator),
+                ForecastCostSensor(coordinator),
+            ])
+        if coordinator.data.get(DATA_API_USAGE_BREAKDOWN):
+            LOGGER.info("Usage breakdown data found. Adding breakdown sensors.")
+            entities.extend([
+                UsageBreakdownSensor(coordinator, "Appliances", SENSOR_KEY_BREAKDOWN_APPLIANCES),
+                UsageBreakdownSensor(coordinator, "Electronics", SENSOR_KEY_BREAKDOWN_ELECTRONICS),
+                UsageBreakdownSensor(coordinator, "Lighting", SENSOR_KEY_BREAKDOWN_LIGHTING),
+                UsageBreakdownSensor(coordinator, "Other", SENSOR_KEY_BREAKDOWN_OTHER),
+            ])
+
+
+    if has_gas:
+        entities.append(GenesisEnergyStatisticsSensor(coordinator, "Gas"))
+        
+    if coordinator.data.get(DATA_API_EV_PLAN_USAGE):
+        LOGGER.info("EV Plan data found. Adding EV plan sensors.")
+        entities.extend([
+            EVDayUsageSensor(coordinator),
+            EVDayCostSensor(coordinator),
+            EVNightUsageSensor(coordinator),
+            EVNightCostSensor(coordinator),
+            EVTotalSavingsSensor(coordinator)
+        ])
 
     entities.extend([
         PowerShoutEligibilitySensor(coordinator),
@@ -58,7 +95,6 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, asyn
         GenesisEnergyAccountSensor(coordinator)
     ])
     
-    # --- RESTORED BILLING SENSOR CREATION ---
     if coordinator.data.get(DATA_API_WIDGET_SIDEKICK):
         LOGGER.info("Sidekick widget data found. Adding billing sensors.")
         entities.append(TotalUsedSensor(coordinator))
@@ -89,11 +125,14 @@ class GenesisEnergyStatisticsSensor(CoordinatorEntity[GenesisEnergyDataUpdateCoo
             self._consumption_statistic_id, self._cost_statistic_id = STATISTIC_ID_GAS_CONSUMPTION, STATISTIC_ID_GAS_COST
         self._consumption_statistic_name, self._cost_statistic_name = f"Genesis {fuel_type} Consumption Daily", f"Genesis {fuel_type} Cost Daily"
         self._unit, self._currency, self._processed_data_hash = "kWh", "NZD", None
+        self._utc_tz = ZoneInfo("UTC")
+
     @property
     def native_value(self) -> str:
         if self.coordinator.data and (api_data := self.coordinator.data.get(self._data_key)) and api_data.get("usage"): return "ok"
         elif self.coordinator.last_update_success: return "no_data"
         return "error"
+
     @callback
     def _handle_coordinator_update(self) -> None:
         if not self.coordinator.last_update_success: self.async_write_ha_state(); return
@@ -123,7 +162,7 @@ class GenesisEnergyStatisticsSensor(CoordinatorEntity[GenesisEnergyDataUpdateCoo
             for entry in sorted_usage_data:
                 try:
                     value = float(entry[value_key])
-                    start_dt_utc = datetime.fromisoformat(entry['startDate']).astimezone(pytz.utc)
+                    start_dt_utc = datetime.fromisoformat(entry['startDate']).astimezone(self._utc_tz)
                     start_ts = start_dt_utc.timestamp()
                 except (KeyError, ValueError, TypeError): continue
                 if start_ts > last_ts:
@@ -138,6 +177,298 @@ class GenesisEnergyStatisticsSensor(CoordinatorEntity[GenesisEnergyDataUpdateCoo
         
         await _process_one_statistic(self._consumption_statistic_id, self._consumption_statistic_name, self._unit, 'kw')
         await _process_one_statistic(self._cost_statistic_id, self._cost_statistic_name, self._currency, 'costNZD')
+
+
+class GenerationMixSensor(CoordinatorEntity[GenesisEnergyDataUpdateCoordinator], SensorEntity):
+    _attr_has_entity_name = True
+    _attr_native_unit_of_measurement = "%"
+    _attr_icon = "mdi:leaf"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: GenesisEnergyDataUpdateCoordinator):
+        super().__init__(coordinator)
+        self.entity_description = SensorEntityDescription(
+            key=SENSOR_KEY_GENERATION_MIX,
+            name="Grid Generation Eco-Friendly",
+        )
+        self._attr_device_info = coordinator.device_info
+        self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{self.entity_description.key}"
+        self._nz_tz = ZoneInfo('Pacific/Auckland')
+
+    @property
+    def native_value(self) -> float | None:
+        gen_mix_data = self.coordinator.data.get(DATA_API_GENERATION_MIX)
+        if not gen_mix_data or not isinstance(gen_mix_data, list):
+            return None
+
+        now_nz = dt_util.now(self._nz_tz)
+        today_str = now_nz.strftime('%Y-%m-%d')
+        current_hour = now_nz.hour
+
+        for day_data in gen_mix_data:
+            if day_data.get("Day") == today_str:
+                for hour_data in day_data.get("HourlyBreakdown", []):
+                    if hour_data.get("Hour") == current_hour:
+                        eco_percentage = hour_data.get("EcoFriendlyPercentage")
+                        if eco_percentage is not None:
+                            return float(eco_percentage)
+        return None
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        if gen_mix_data := self.coordinator.data.get(DATA_API_GENERATION_MIX):
+            return {"forecast": gen_mix_data}
+        return None
+
+class GenesisEVPlanSensor(CoordinatorEntity[GenesisEnergyDataUpdateCoordinator], SensorEntity):
+    _attr_has_entity_name = True
+    _attr_attribution = "Data from latest full day"
+
+    def __init__(self, coordinator: GenesisEnergyDataUpdateCoordinator, desc: SensorEntityDescription):
+        super().__init__(coordinator)
+        self.entity_description = desc
+        self._attr_device_info = coordinator.device_info
+        self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{desc.key}"
+    
+    @property
+    def available(self) -> bool:
+        return super().available and self.coordinator.data.get(DATA_API_EV_PLAN_USAGE) is not None
+
+    @property
+    def _latest_day_data(self) -> dict | None:
+        ev_data = self.coordinator.data.get(DATA_API_EV_PLAN_USAGE)
+        if not ev_data or not isinstance(ev_data, list):
+            return None
+        return ev_data[-1]
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        if data := self._latest_day_data:
+            if reading_date := data.get("date"):
+                try:
+                    dt_obj = datetime.fromisoformat(reading_date)
+                    return {"reading_date": dt_obj.strftime("%A, %d %B %Y")}
+                except (ValueError, TypeError):
+                    return {"reading_date": reading_date}
+        return None
+
+class EVDayUsageSensor(GenesisEVPlanSensor):
+    # --- MODIFIED --- Device class removed
+    _attr_native_unit_of_measurement = "kWh"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: GenesisEnergyDataUpdateCoordinator):
+        description = SensorEntityDescription(key=SENSOR_KEY_EV_DAY_USAGE, name="EV Plan Day Usage")
+        super().__init__(coordinator, description)
+
+    @property
+    def native_value(self) -> float | None:
+        if data := self._latest_day_data:
+            return data.get("kWhDay")
+        return None
+
+class EVDayCostSensor(GenesisEVPlanSensor):
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_native_unit_of_measurement = "NZD"
+    _attr_state_class = SensorStateClass.TOTAL
+
+    def __init__(self, coordinator: GenesisEnergyDataUpdateCoordinator):
+        description = SensorEntityDescription(key=SENSOR_KEY_EV_DAY_COST, name="EV Plan Day Cost")
+        super().__init__(coordinator, description)
+
+    @property
+    def native_value(self) -> float | None:
+        if data := self._latest_day_data:
+            try:
+                return float(data.get("usageCostDay"))
+            except (ValueError, TypeError):
+                return None
+        return None
+
+class EVNightUsageSensor(GenesisEVPlanSensor):
+    # --- MODIFIED --- Device class removed
+    _attr_native_unit_of_measurement = "kWh"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: GenesisEnergyDataUpdateCoordinator):
+        description = SensorEntityDescription(key=SENSOR_KEY_EV_NIGHT_USAGE, name="EV Plan Night Usage")
+        super().__init__(coordinator, description)
+
+    @property
+    def native_value(self) -> float | None:
+        if data := self._latest_day_data:
+            return data.get("kWhNight")
+        return None
+
+class EVNightCostSensor(GenesisEVPlanSensor):
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_native_unit_of_measurement = "NZD"
+    _attr_state_class = SensorStateClass.TOTAL
+
+    def __init__(self, coordinator: GenesisEnergyDataUpdateCoordinator):
+        description = SensorEntityDescription(key=SENSOR_KEY_EV_NIGHT_COST, name="EV Plan Night Cost")
+        super().__init__(coordinator, description)
+
+    @property
+    def native_value(self) -> float | None:
+        if data := self._latest_day_data:
+            try:
+                return float(data.get("usageCostNight"))
+            except (ValueError, TypeError):
+                return None
+        return None
+
+class EVTotalSavingsSensor(GenesisEVPlanSensor):
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_native_unit_of_measurement = "NZD"
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_icon = "mdi:piggy-bank-outline"
+
+    def __init__(self, coordinator: GenesisEnergyDataUpdateCoordinator):
+        description = SensorEntityDescription(key=SENSOR_KEY_EV_TOTAL_SAVINGS, name="EV Plan Savings")
+        super().__init__(coordinator, description)
+
+    @property
+    def native_value(self) -> float | None:
+        if data := self._latest_day_data:
+            try:
+                cost_with_day_rate = float(data.get("costWithDayRate"))
+                actual_night_cost = float(data.get("usageCostNight"))
+                return round(cost_with_day_rate - actual_night_cost, 2)
+            except (ValueError, TypeError, KeyError):
+                return None
+        return None
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        """Return the date of the reading and the full history."""
+        attrs = {}
+        if data := self._latest_day_data:
+            if reading_date := data.get("date"):
+                try:
+                    dt_obj = datetime.fromisoformat(reading_date)
+                    attrs["reading_date"] = dt_obj.strftime("%A, %d %B %Y")
+                except (ValueError, TypeError):
+                    attrs["reading_date"] = reading_date
+        
+        if history := self.coordinator.data.get(DATA_API_EV_PLAN_USAGE):
+            attrs["history"] = history
+            
+        return attrs if attrs else None
+
+class ForecastSensor(CoordinatorEntity[GenesisEnergyDataUpdateCoordinator], SensorEntity):
+    _attr_has_entity_name = True
+    _attr_attribution = "Forecast data from Genesis Energy"
+    
+    def __init__(self, coordinator: GenesisEnergyDataUpdateCoordinator, desc: SensorEntityDescription):
+        super().__init__(coordinator)
+        self.entity_description = desc
+        self._attr_device_info = coordinator.device_info
+        self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{desc.key}"
+    
+    @property
+    def available(self) -> bool:
+        if not (forecast_data := self.coordinator.data.get(DATA_API_ELECTRICITY_FORECAST)):
+            return False
+        return "IcpForecasts" in forecast_data and forecast_data["IcpForecasts"] and "Forecast" in forecast_data["IcpForecasts"][0]
+
+    @property
+    def _today_forecast_data(self) -> dict | None:
+        if not self.available:
+            return None
+        return self.coordinator.data[DATA_API_ELECTRICITY_FORECAST]["IcpForecasts"][0]["Forecast"][0]
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        if not (today_data := self._today_forecast_data):
+            return None
+            
+        attrs = {
+            "prediction_low_kwh": today_data.get("PredictionLowInkWh"),
+            "prediction_high_kwh": today_data.get("PredictionHighInkWh"),
+            "prediction_low_cost": today_data.get("PredictionLowCost"),
+            "prediction_high_cost": today_data.get("PredictionHighCost"),
+            "daily_forecast": self.coordinator.data[DATA_API_ELECTRICITY_FORECAST]["IcpForecasts"][0]["Forecast"]
+        }
+        return attrs
+
+class ForecastUsageSensor(ForecastSensor):
+    _attr_native_unit_of_measurement = "kWh"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:chart-line"
+
+    def __init__(self, coordinator: GenesisEnergyDataUpdateCoordinator):
+        description = SensorEntityDescription(key=SENSOR_KEY_FORECAST_USAGE, name="Today's Forecast Usage")
+        super().__init__(coordinator, description)
+    
+    @property
+    def native_value(self) -> float | None:
+        if data := self._today_forecast_data:
+            return data.get("PredictionInkWh")
+        return None
+
+class ForecastCostSensor(ForecastSensor):
+    _attr_native_unit_of_measurement = "NZD"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:currency-usd"
+
+    def __init__(self, coordinator: GenesisEnergyDataUpdateCoordinator):
+        description = SensorEntityDescription(key=SENSOR_KEY_FORECAST_COST, name="Today's Forecast Cost")
+        super().__init__(coordinator, description)
+
+    @property
+    def native_value(self) -> float | None:
+        if data := self._today_forecast_data:
+            return data.get("PredictionCost")
+        return None
+
+class UsageBreakdownSensor(CoordinatorEntity[GenesisEnergyDataUpdateCoordinator], SensorEntity):
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_native_unit_of_measurement = "kWh"
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: GenesisEnergyDataUpdateCoordinator, category_name: str, key: str):
+        super().__init__(coordinator)
+        self._category_name = category_name
+        self.entity_description = SensorEntityDescription(key=key, name=f"Usage Breakdown - {category_name}")
+        self._attr_device_info = coordinator.device_info
+        self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{key}"
+
+    @property
+    def _latest_breakdown_period(self) -> dict | None:
+        breakdown_data = self.coordinator.data.get(DATA_API_USAGE_BREAKDOWN)
+        if (
+            not breakdown_data 
+            or "electricity" not in breakdown_data 
+            or not breakdown_data["electricity"].get("breakdowns")
+        ):
+            return None
+        return breakdown_data["electricity"]["breakdowns"][0]
+
+    @property
+    def _category_data(self) -> dict | None:
+        if breakdown := self._latest_breakdown_period:
+            for category in breakdown.get("categories", []):
+                if category.get("name") == self._category_name:
+                    return category
+        return None
+
+    @property
+    def native_value(self) -> float | None:
+        if category_data := self._category_data:
+            return category_data.get("kWh", {}).get("value")
+        return None
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        attrs = {}
+        if period_data := self._latest_breakdown_period:
+            attrs["period"] = period_data.get("period")
+        if category_data := self._category_data:
+            attrs["percentage"] = category_data.get("kWh", {}).get("percentage")
+            attrs["daily_average_kwh"] = category_data.get("kWh", {}).get("dailyAverageUsage")
+        return attrs
 
 class GenesisBillSensor(CoordinatorEntity[GenesisEnergyDataUpdateCoordinator], SensorEntity):
     _attr_has_entity_name = True
@@ -249,7 +580,8 @@ class PowerShoutBalanceSensor(CoordinatorEntity[GenesisEnergyDataUpdateCoordinat
         if expiring := self.coordinator.data.get(DATA_API_POWERSHOUT_EXPIRING, {}):
             if msg := expiring.get("expiringHoursMessage", {}): attrs["expiring_hours_message"] = msg.get("title")
         if bookings := self.coordinator.data.get(DATA_API_POWERSHOUT_BOOKINGS, {}):
-            upcoming = [b for b in bookings.get("bookings", []) if isinstance(b, dict) and datetime.fromisoformat(b.get("startDate")).astimezone(pytz.utc) > dt_util.utcnow()]
+            utc = ZoneInfo("UTC")
+            upcoming = [b for b in bookings.get("bookings", []) if isinstance(b, dict) and datetime.fromisoformat(b.get("startDate")).astimezone(utc) > dt_util.utcnow()]
             if upcoming: upcoming.sort(key=lambda b: b["start"]); attrs["next_booking_start"] = upcoming[0].get("startDate")
         return attrs
 class GenesisEnergyAccountSensor(CoordinatorEntity[GenesisEnergyDataUpdateCoordinator], SensorEntity):
