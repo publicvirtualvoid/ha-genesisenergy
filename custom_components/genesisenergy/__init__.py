@@ -2,7 +2,7 @@
 
 """The Genesis Energy integration."""
 import voluptuous as vol
-import pytz
+from zoneinfo import ZoneInfo
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, callback
@@ -13,7 +13,7 @@ from homeassistant.components.persistent_notification import async_create
 from .const import (
     DOMAIN, PLATFORMS, LOGGER, CONF_EMAIL,
     SERVICE_ADD_POWERSHOUT_BOOKING, ATTR_START_DATETIME, ATTR_DURATION_HOURS,
-    DATA_API_POWERSHOUT_INFO, DATA_API_AGGREGATED_ELEC_BILL,
+    DATA_API_POWERSHOUT_INFO,
     SERVICE_BACKFILL_STATISTICS, ATTR_DAYS_TO_FETCH, ATTR_FUEL_TYPE,
     SERVICE_FORCE_UPDATE, DATA_API_BILLING_PLANS
 )
@@ -35,7 +35,6 @@ SERVICE_SCHEMA_FORCE_UPDATE = vol.Schema({
     vol.Required(ATTR_FUEL_TYPE): vol.In(["electricity", "gas", "both"]),
 })
 
-# ... (get_available_services and async_setup_entry boilerplate are unchanged) ...
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Genesis Energy from a config entry."""
@@ -56,22 +55,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # --- REVISED Power Shout Booking Service ---
+    def get_available_services(coordinator: GenesisEnergyDataUpdateCoordinator) -> tuple[bool, bool]:
+        """Checks billing plans and returns a tuple of (has_electricity, has_gas)."""
+        has_electricity = False
+        has_gas = False
+        billing_plans_data = coordinator.data.get(DATA_API_BILLING_PLANS)
+        if billing_plans_data and isinstance(billing_plans_data.get("billingAccountSites"), list):
+            for site in billing_plans_data["billingAccountSites"]:
+                if isinstance(site.get("supplyPoints"), list):
+                    for supply_point in site["supplyPoints"]:
+                        if isinstance(supply_point, dict):
+                            supply_type = supply_point.get("supplyType")
+                            if supply_type == "electricity":
+                                has_electricity = True
+                            elif supply_type == "naturalGas":
+                                has_gas = True
+        return has_electricity, has_gas
+
     @callback
     async def async_add_powershout_booking_service(call: ServiceCall) -> None:
         """Handle the service call to add a Power Shout booking."""
         start_dt_raw = call.data[ATTR_START_DATETIME]
         duration = call.data[ATTR_DURATION_HOURS]
 
-        # --- MODIFICATION START ---
-        # Floor the start time to the beginning of the hour.
         start_dt = start_dt_raw.replace(minute=0, second=0, microsecond=0)
         LOGGER.info(
             f"Power Shout booking requested for {start_dt_raw}. "
             f"Flooring to hour start time: {start_dt}"
         )
-        # --- MODIFICATION END ---
-
 
         LOGGER.info(f"Attempting to book Power Shout for {duration} hour(s) starting at {start_dt}")
 
@@ -91,8 +102,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         supply_point_id = ps_info['supplyPointId']
         loyalty_account_id = ps_info['loyaltyAccountId']
 
-        # Use the floored datetime for the API call
-        start_date_str = start_dt.astimezone(pytz.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+        start_date_str = start_dt.astimezone(ZoneInfo("UTC")).strftime('%Y-%m-%dT%H:%M:%S.000Z')
 
         try:
             success = await coordinator.api.add_powershout_booking(
@@ -105,7 +115,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
             if success:
                 LOGGER.info("Successfully booked Power Shout.")
-                # --- MODIFICATION --- Use the floored time in the success message
                 async_create(
                     hass,
                     f"Your {duration}-hour Power Shout starting at {start_dt.strftime('%-I:%M %p')} has been booked successfully.",
@@ -142,7 +151,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         schema=SERVICE_SCHEMA_ADD_POWERSHOUT_BOOKING,
     )
 
-    # --- Backfill Service Handler (Unchanged) ---
     @callback
     async def async_backfill_statistics_service(call: ServiceCall) -> None:
         """Handle the service call to backfill historical statistics."""
@@ -180,7 +188,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         schema=SERVICE_SCHEMA_BACKFILL_STATISTICS,
     )
 
-    # --- Force Update Service Handler (Unchanged) ---
     @callback
     async def async_force_update_service(call: ServiceCall) -> None:
         """Handle the service call to force an update."""
@@ -194,7 +201,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         schema=SERVICE_SCHEMA_FORCE_UPDATE,
     )
     
-    # ... (Service unloading and final setup are unchanged) ...
     def _unload_services():
         hass.services.async_remove(DOMAIN, SERVICE_ADD_POWERSHOUT_BOOKING)
         hass.services.async_remove(DOMAIN, SERVICE_BACKFILL_STATISTICS)
